@@ -22,7 +22,7 @@ class TrainArgs(BaseArgs):
         parser.add_argument("--preset-path", type=str, required=False, dest="preset_path", help="The path to a built-in preset file, applied before --config-path. When set, config migration is skipped for both files, so both the preset and the config must be in the current format.")
         parser.add_argument("--config-path", type=str, required=True, dest="config_path", help="The path to the config file")
         parser.add_argument("--secrets-path", type=str, required=False, dest="secrets_path", help="The path to the secrets file")
-        parser.add_argument("--config-value", type=str, required=False, dest="config_values", action="append", help="Override a single config value, as KEY=VALUE. Applied after --preset-path and --config-path. KEY may use dot notation to reach nested config objects (e.g. ema.decay). Can be passed multiple times.")
+        parser.add_argument("--config-value", type=str, required=False, dest="config_values", action="append", help="Override a single config value, as KEY=VALUE. Applied after --preset-path and --config-path. KEY may use dot notation to reach nested config objects (e.g. optimizer.beta1). VALUE None clears a nullable field. Can be passed multiple times.")
         parser.add_argument("--callback-path", type=str, required=False, dest="callback_path", help="The path to the callback pickle file")
         parser.add_argument("--command-path", type=str, required=False, dest="command_path", help="The path to the command pickle file")
 

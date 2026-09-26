@@ -108,7 +108,15 @@ def validate_path(
         if not os.path.exists(os.path.abspath(trimmed)):
             return "Input path does not exist"
 
-    if io_type in (PathIOType.OUTPUT, PathIOType.MODEL):
+    if io_type == PathIOType.OUTPUT:
+        # output folders are created with makedirs, so only the nearest existing ancestor has to be a folder
+        ancestor = os.path.dirname(os.path.abspath(trimmed))
+        while not os.path.exists(ancestor) and os.path.dirname(ancestor) != ancestor:
+            ancestor = os.path.dirname(ancestor)
+        if not os.path.isdir(ancestor):
+            return "Parent path is not a folder"
+
+    if io_type == PathIOType.MODEL:
         if not os.path.isdir(os.path.dirname(os.path.abspath(trimmed))):
             return "Parent folder does not exist"
 

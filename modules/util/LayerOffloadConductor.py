@@ -14,6 +14,7 @@ from modules.util.torch_util import (
     tensors_record_stream,
     tensors_to_device_,
     torch_gc,
+    torch_sync,
     unpin_tensor_,
 )
 
@@ -27,6 +28,16 @@ def log(msg: str = ''):
     pass
     # print(msg)
     # MESSAGES.append(msg)
+
+
+def unpin_tensors_(tensors: list[torch.Tensor | None]):
+    # a non_blocking copy can still be reading from or writing to pinned memory. Unpinning (and then freeing) it
+    # before that copy finished lets the DMA engine access memory that is no longer pinned, so synchronize first.
+    tensors = [tensor for tensor in tensors if tensor is not None]
+    if tensors:
+        torch_sync()
+        for tensor in tensors:
+            unpin_tensor_(tensor)
 
 
 def clone_tensor_allocator(tensor: torch.Tensor) -> torch.Tensor:
@@ -206,9 +217,8 @@ class StaticLayerAllocator:
         if not self.__allocate_statically:
             return
 
-        for cache_tensor in self.cache_tensors:
-            if cache_tensor is not None and self.__is_pinned:
-                unpin_tensor_(cache_tensor)
+        if self.__is_pinned:
+            unpin_tensors_(self.cache_tensors)
 
         self.cache_tensors = [None] * len(self.cache_tensors)
         self.__tensor_allocators = [None] * len(self.__tensor_allocators)
@@ -298,8 +308,7 @@ class StaticActivationAllocator:
         if len(self.__cache_tensors) > 1:
             # more than one tensor was allocated. this can be condensed into a single tensor to reduce fragmentation
             if self.__is_pinned:
-                for cache_tensor in self.__cache_tensors:
-                    unpin_tensor_(cache_tensor)
+                unpin_tensors_(self.__cache_tensors)
 
             self.__cache_tensors = []
             torch_gc()
@@ -320,8 +329,7 @@ class StaticActivationAllocator:
 
     def deallocate_cache(self):
         if self.__is_pinned:
-            for cache_tensor in self.__cache_tensors:
-                unpin_tensor_(cache_tensor)
+            unpin_tensors_(self.__cache_tensors)
 
         self.__cache_tensors = []
 

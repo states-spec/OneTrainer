@@ -114,6 +114,8 @@ class GenericTrainer(BaseTrainer):
                     model_names.embedding.model_name = last_backup_path
                 else:  # fine-tunes
                     model_names.base_model = last_backup_path
+                    # the trained transformer is part of the backup, a configured override would replace it
+                    model_names.transformer_model = ""
 
                 print(f"Continuing training from backup '{last_backup_path}'...")
             else:

@@ -23,10 +23,11 @@ class BaseTrainer(
     metaclass=ABCMeta,
 ):
 
-    tensorboard_subprocess: subprocess.Popen
+    tensorboard_subprocess: subprocess.Popen | None
 
     def __init__(self, config: TrainConfig, callbacks: TrainCallbacks, commands: TrainCommands):
         super().__init__()
+        self.tensorboard_subprocess = None
         self.config = config
         self.callbacks = callbacks
         self.commands = commands
@@ -100,4 +101,8 @@ class BaseTrainer(
         self.tensorboard_subprocess = subprocess.Popen(tensorboard_args)
 
     def _stop_tensorboard(self):
-        self.tensorboard_subprocess.kill()
+        # safe to call more than once, or when tensorboard was never started (e.g. on an error path)
+        if self.tensorboard_subprocess is not None:
+            self.tensorboard_subprocess.kill()
+            self.tensorboard_subprocess.wait()
+            self.tensorboard_subprocess = None

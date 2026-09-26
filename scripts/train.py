@@ -48,16 +48,22 @@ def main():
 
     trainer = create.create_trainer(train_config, callbacks, commands)
 
-    trainer.start()
-
     canceled = False
     try:
+        trainer.start()
         trainer.train()
     except KeyboardInterrupt:
         canceled = True
+    except Exception:
+        # end() is skipped on errors, so stop tensorboard here. Otherwise the orphaned subprocess keeps the
+        # process (and a cloud orchestrator's pipe) alive after training has already crashed.
+        trainer._stop_tensorboard()
+        raise
 
     if not canceled or train_config.backup_before_save:
         trainer.end()
+    else:
+        trainer._stop_tensorboard()
 
 
 if __name__ == '__main__':

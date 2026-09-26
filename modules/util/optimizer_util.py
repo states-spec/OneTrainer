@@ -1,3 +1,5 @@
+import copy
+
 import modules.util.multi_gpu_util as multi
 from modules.model.BaseModel import BaseModel
 from modules.util.config.TrainConfig import TrainConfig, TrainOptimizerConfig
@@ -9,12 +11,27 @@ from modules.util.torch_util import optimizer_to_device_
 import torch
 
 
-def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
-    optimizer = train_config.optimizer.optimizer
-
+def default_optimizer_config(optimizer: Optimizer) -> TrainOptimizerConfig:
+    # the settings an optimizer starts from when it is selected in the UI
     optimizer_config = TrainOptimizerConfig.default_values()
     optimizer_config.from_dict(OPTIMIZER_DEFAULT_PARAMETERS[optimizer])
     optimizer_config.optimizer = optimizer
+    return optimizer_config
+
+
+def fill_unset_optimizer_settings(optimizer_config: TrainOptimizerConfig) -> TrainOptimizerConfig:
+    # a copy where every unset (None) setting of the optimizer's defaults is replaced by the default the UI starts from
+    filled_config = copy.deepcopy(optimizer_config)
+    for key, value in OPTIMIZER_DEFAULT_PARAMETERS[optimizer_config.optimizer].items():
+        if getattr(filled_config, key, None) is None:
+            setattr(filled_config, key, value)
+    return filled_config
+
+
+def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
+    optimizer = train_config.optimizer.optimizer
+
+    optimizer_config = default_optimizer_config(optimizer)
 
     if str(optimizer) in train_config.optimizer_defaults:
         saved_optimizer_config = train_config.optimizer_defaults[str(optimizer)]
@@ -26,9 +43,7 @@ def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
 def load_optimizer_defaults(train_config: TrainConfig) -> TrainOptimizerConfig:
     optimizer = train_config.optimizer.optimizer
 
-    optimizer_config = TrainOptimizerConfig.default_values()
-    optimizer_config.from_dict(OPTIMIZER_DEFAULT_PARAMETERS[optimizer])
-    optimizer_config.optimizer = optimizer
+    optimizer_config = default_optimizer_config(optimizer)
 
     if str(optimizer) in train_config.optimizer_defaults:
         train_config.optimizer_defaults.pop(str(optimizer))

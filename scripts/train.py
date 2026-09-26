@@ -10,15 +10,10 @@ from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.config.SecretsConfig import SecretsConfig
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.optimizer_util import default_optimizer_config
 
 
-def main():
-    args = TrainArgs.parse_args()
-    callbacks = TrainCallbacks()
-    commands = TrainCommands()
-
-    train_config = TrainConfig.default_values()
-
+def load_config(args: TrainArgs, train_config: TrainConfig) -> TrainConfig:
     if args.preset_path is not None:
         with open(args.preset_path, "r") as f:
             train_config.from_dict(json.load(f), migrate=False)
@@ -37,6 +32,25 @@ def main():
         elif target.types[leaf_key] is bool:
             value = value.lower() in ("true", "1", "yes")
         target.from_dict({leaf_key: value}, migrate=False)
+
+    return train_config
+
+
+def main():
+    args = TrainArgs.parse_args()
+    callbacks = TrainCallbacks()
+    commands = TrainCommands()
+
+    train_config = load_config(args, TrainConfig.default_values())
+
+    optimizer = train_config.optimizer.optimizer
+    if optimizer.is_adv:
+        # The UI starts every optimizer from OPTIMIZER_DEFAULT_PARAMETERS. Load again on top of those defaults, so
+        # optimizer settings missing from the config files get the UI's values instead of create_optimizer's
+        # fallbacks (e.g. beta1=0 for ADOPT_ADV). Settings present in the files still override the defaults.
+        train_config = TrainConfig.default_values()
+        train_config.optimizer = default_optimizer_config(optimizer)
+        train_config = load_config(args, train_config)
 
     try:
         with open("secrets.json" if args.secrets_path is None else args.secrets_path, "r") as f:

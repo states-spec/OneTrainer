@@ -91,6 +91,19 @@ class Optimizer(Enum):
         ]
 
     @property
+    def is_adv(self):
+        # the adv_optm optimizers
+        return self in [
+            self.ADAMW_ADV,
+            self.ADOPT_ADV,
+            self.LION_ADV,
+            self.SIGNSGD_ADV,
+            self.PRODIGY_ADV,
+            self.MUON_ADV,
+            self.ADAMUON_ADV,
+        ]
+
+    @property
     def is_schedule_free(self):
         return self in [
             self.SCHEDULE_FREE_ADAMW,

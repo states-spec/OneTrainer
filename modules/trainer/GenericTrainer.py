@@ -517,8 +517,10 @@ class GenericTrainer(BaseTrainer):
             traceback.print_exc()
             tqdm.write("Could not save model. Check your disk space!")
             try:
-                if os.path.isfile(save_path):
+                if os.path.isdir(save_path):
                     shutil.rmtree(save_path)
+                elif os.path.isfile(save_path):
+                    os.remove(save_path)
             except Exception:
                 traceback.print_exc()
                 tqdm.write("Could not delete partial save")

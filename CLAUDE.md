@@ -24,9 +24,9 @@ ruff check .                     # lint config in pyproject.toml; E501 ignored, 
 pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, NOT ruff format)
 ```
 - **No test suite.** No GitHub Actions workflows; only pre-commit.ci. Validate changes with `ruff check` plus a short real run (e.g. `--config-value epochs=1`).
-- `--config-value KEY=VALUE`: dotted keys walk nested `BaseConfig`s (`optimizer.beta1=0.9`). The help text's example `ema.decay` is **wrong**: `ema` is an `EMAMode` enum; the field is `ema_decay`.
+- `--config-value KEY=VALUE`: dotted keys walk nested `BaseConfig`s (`optimizer.beta1=0.9`); `None`/`null` clears a nullable field. `ema` is an `EMAMode` enum; the decay field is `ema_decay`.
 - `--preset-path` turns off migration for **both** files, so the config must already be in the current format (`__version` 11).
-- Python: min 3.10, <3.14; conda path uses 3.13 (`lib.include.sh:35-37`). In the script, `OT_PREFER_VENV` defaults to `true`, although LAUNCH-SCRIPTS.md says `false`.
+- Python: min 3.10, <3.14; conda path uses 3.13 (`lib.include.sh:35-37`). `OT_PREFER_VENV` defaults to `true` (Venv even if Conda is installed); set it to `false` to use Conda.
 
 ## Architecture (one training run)
 ```
@@ -119,12 +119,13 @@ modules/trainer/GenericTrainer.py
 - `is_schedule_free` optimizers (SCHEDULE_FREE_ADAMW/SGD, PRODIGY_PLUS_SCHEDULE_FREE) are **silently forced** to a CONSTANT scheduler with no warmup (`create.py:1137`, `:1222`). PRODIGY_ADV is *not* flagged schedule-free.
 - `learning_rate_warmup_steps` (default **200**): >1 means steps (divided by grad-accum), 0<x≤1 means a *fraction* of total steps (so `1` means warmup across the whole run), ≤0 means none (`create.py:1127`).
 - The ADV optimizers get `k_warmup_steps = learning_rate_warmup_steps / grad_accum` for Kourkoutas-β (`create.py:689,714,746`). With LR warmup at 0, that warmup is 0 too.
-- `ADAMW_ADV`/`ADOPT_ADV` read `beta3_ema` from `optimizer_config.beta3` (`create.py:686,709`), but the UI edits `beta3_ema`. The UI "Beta3 EMA" value is **ignored** (always 0.9999) for those two. PRODIGY_ADV reads the right field.
+- `ADAM_8BIT` builds `bnb.optim.Adam` with UI default `optim_bits=32` (and ignores `optim_bits`/`amsgrad`), so it is effectively 32-bit Adam. Several other bnb optimizers show UI params (`optim_bits`, `min_8bit_size`, …) that `create.py` never passes.
 - bitsandbytes backs every `*_8BIT` optimizer plus ADAGRAD, RMSPROP, LARS, LAMB and AdEMAMix (even 32-bit), and the `INT_8`/`NFLOAT_4` weight dtypes. `*_COMPRESSED` dtypes need nvCOMP (NVIDIA only) and raise otherwise.
 - A layer-offloaded part in FINE_TUNE requires an optimizer with `supports_fused_back_pass()` **and** `fused_back_pass=true` (`create.py:141`).
 
 **Adapters**
 - DoRA is `lora_decompose` for LoRA and `lokr_weight_decompose` for LoKr. LoHa and OFT v2 have no DoRA path; `lora_decompose` is ignored for them.
+- Conv LoHa factors are saved in the LyCORIS 2D layout (`hada_w*_a` [out, rank], `hada_w*_b` [rank, in·k·k]); `LoHaModule._load_from_state_dict` also accepts the older 4D layout.
 - LoKr uses `lokr_dim` (not `lora_rank`) and `lora_alpha`. If `lokr_dim >= max(w2 dims)/2`, it prints "using full matrix mode" and makes W2 full (`LoRAModule.py:365`). If W1 and W2 both end up full, **alpha is overwritten with `lokr_dim`** (scale 1, `:445`), so `lora_alpha` is ignored.
 - `lokr_decompose_factor=-1` (the default) factorizes near √dim; for example 3072 → 48×64.
 - The output format changes the adapter's structure. `ORIGINAL_LORA/COMFY_LORA/KOHYA_LORA` build **fused qkv** adapters (`ModelFormat.needs_qkv_fusion`), while DIFFUSERS/LEGACY keep them split. Resuming a LoRA or backup under a different fusion mode fails `check_fusion_match`.
@@ -139,7 +140,7 @@ modules/trainer/GenericTrainer.py
 **EMA / saving**
 - Intermediate saves and the final model contain **EMA weights** when EMA is on (`GenericTrainer.__save`, `end`). Backups keep raw weights plus EMA state.
 - EMA updates run only every `ema_update_step_interval` (default 5) optimizer steps but use the per-step decay, so the effective horizon is about `interval/(1-decay)` steps (≈5000 at defaults). Decay ramps as `(1+s)/(10+s)`. With EMA on, `non_ema_sampling=true` (default) doubles the sampling cost.
-- Ctrl-C in `scripts/train.py` saves only if `backup_before_save` is true, and `end()` saves nothing unless at least one optimizer step ran.
+- Ctrl-C in `scripts/train.py` saves only if `backup_before_save` is true, and `end()` saves nothing unless at least one optimizer step ran. On an exception, `end()` is skipped (no save) and only TensorBoard is stopped.
 - `update.sh`/`install.sh` run `pip --upgrade-strategy eager -r requirements-rocm.txt`, which **reinstalls the pinned torch** (`2.12.0+rocm7.2` today) over any manually installed build.
 
 **Attention**

@@ -237,7 +237,7 @@ def create_optimizer(
         # ADAM_8BIT Optimizer
         case Optimizer.ADAM_8BIT:
             import bitsandbytes as bnb
-            optimizer = bnb.optim.Adam(
+            optimizer = bnb.optim.Adam8bit(
                 params=parameters,
                 lr=config.learning_rate,
                 betas=(optimizer_config.beta1 if optimizer_config.beta1 is not None else 0.9,

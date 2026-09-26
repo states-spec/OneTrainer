@@ -137,10 +137,9 @@ def create_optimizer(
     if optimizer_config.optimizer is None:
         return None
 
-    if optimizer_config.optimizer.is_adv:
-        # unset settings (e.g. from a hand-written config) use the UI's defaults, not the fallbacks below
-        from modules.util.optimizer_util import fill_unset_optimizer_settings
-        optimizer_config = fill_unset_optimizer_settings(optimizer_config)
+    # unset settings (e.g. from a hand-written config) use the UI's defaults, not the fallbacks below
+    from modules.util.optimizer_util import fill_unset_optimizer_settings
+    optimizer_config = fill_unset_optimizer_settings(optimizer_config)
 
     # a trained, layer-offloaded part has its params evicted during the back pass, so it needs fused_back_pass
     if any(part.offload_fraction > 0 and part.train for part in config.model_part_configs()):

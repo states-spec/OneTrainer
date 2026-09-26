@@ -19,11 +19,22 @@ def default_optimizer_config(optimizer: Optimizer) -> TrainOptimizerConfig:
     return optimizer_config
 
 
+# settings that create_optimizer passes on as None, where None is a choice rather than "use the default"
+# (e.g. eps=None enables Adam-atan2 in prodigy-plus-schedule-free)
+_NONE_IS_A_SETTING = {
+    Optimizer.PRODIGY: {"beta3"},
+    Optimizer.PRODIGY_PLUS_SCHEDULE_FREE: {"beta3", "eps"},
+    Optimizer.PRODIGY_ADV: {"beta3"},
+    Optimizer.ADAFACTOR: {"beta1"},
+}
+
+
 def fill_unset_optimizer_settings(optimizer_config: TrainOptimizerConfig) -> TrainOptimizerConfig:
     # a copy where every unset (None) setting of the optimizer's defaults is replaced by the default the UI starts from
+    optimizer = optimizer_config.optimizer
     filled_config = copy.deepcopy(optimizer_config)
-    for key, value in OPTIMIZER_DEFAULT_PARAMETERS[optimizer_config.optimizer].items():
-        if getattr(filled_config, key, None) is None:
+    for key, value in OPTIMIZER_DEFAULT_PARAMETERS[optimizer].items():
+        if getattr(filled_config, key, None) is None and key not in _NONE_IS_A_SETTING.get(optimizer, set()):
             setattr(filled_config, key, value)
     return filled_config
 

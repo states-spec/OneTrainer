@@ -43,14 +43,13 @@ def main():
 
     train_config = load_config(args, TrainConfig.default_values())
 
+    # The UI starts every optimizer from OPTIMIZER_DEFAULT_PARAMETERS. Load again on top of those defaults, so
+    # optimizer settings missing from the config files get the UI's values instead of create_optimizer's
+    # fallbacks (e.g. beta1=0 for ADOPT_ADV). Settings present in the files still override the defaults.
     optimizer = train_config.optimizer.optimizer
-    if optimizer.is_adv:
-        # The UI starts every optimizer from OPTIMIZER_DEFAULT_PARAMETERS. Load again on top of those defaults, so
-        # optimizer settings missing from the config files get the UI's values instead of create_optimizer's
-        # fallbacks (e.g. beta1=0 for ADOPT_ADV). Settings present in the files still override the defaults.
-        train_config = TrainConfig.default_values()
-        train_config.optimizer = default_optimizer_config(optimizer)
-        train_config = load_config(args, train_config)
+    train_config = TrainConfig.default_values()
+    train_config.optimizer = default_optimizer_config(optimizer)
+    train_config = load_config(args, train_config)
 
     try:
         with open("secrets.json" if args.secrets_path is None else args.secrets_path, "r") as f:

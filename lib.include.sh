@@ -421,7 +421,10 @@ function show_runtime_solutions {
         # NOTE: We tell the user what to do, since automated removal is risky.
         print "Solution: Switch your Conda environment to the required Python version by deleting your old environment, and then run OneTrainer again.\n\nTo delete the outdated Conda environment, execute the following command:\n\"${OT_CONDA_CMD}\" remove -y --prefix \"${conda_env_path}\" --all"
     else
-        print "Solution: Either install the required Python version via pyenv (https://github.com/pyenv/pyenv) and set the project directory's Python version with \"pyenv install <version>\" followed by \"pyenv local <version>\", or install Miniconda if you prefer that we automatically manage everything for you (https://docs.anaconda.com/miniconda/). Remember to manually delete any previous Venv or Conda environment which was created with a different Python version. Read \"LAUNCH-SCRIPTS.md\" for more detailed instructions."
+        if has_conda; then
+            print "Note: Conda was detected, but Python Venv is used because OT_PREFER_VENV is \"true\" (the default). To let Conda manage the correct Python version instead, delete the \"${OT_PYTHON_VENV}\" folder and run again with OT_PREFER_VENV=\"false\" (for example: OT_PREFER_VENV=\"false\" ./install.sh)."
+        fi
+        print "Solution: Either install the required Python version via pyenv (https://github.com/pyenv/pyenv) and set the project directory's Python version with \"pyenv install <version>\" followed by \"pyenv local <version>\", or install Miniconda and set OT_PREFER_VENV=\"false\" if you prefer that we automatically manage everything for you (https://docs.anaconda.com/miniconda/). Remember to manually delete any previous Venv or Conda environment which was created with a different Python version. Read \"LAUNCH-SCRIPTS.md\" for more detailed instructions."
     fi
 }
 

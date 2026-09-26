@@ -154,10 +154,11 @@ class StaticLayerAllocator:
     def __init__(
             self,
             device: torch.device,
+            pin_memory: bool,
     ):
         self.device = device
         self.__allocate_statically = True
-        self.__is_pinned = device.type == "cpu"
+        self.__is_pinned = device.type == "cpu" and pin_memory
 
         self.__num_layers = 0
         self.__max_tensor_bytes = 0
@@ -251,10 +252,11 @@ class StaticActivationAllocator:
     def __init__(
             self,
             device: torch.device,
+            pin_memory: bool,
     ):
         self.__device = device
         self.__allocate_statically = True
-        self.__is_pinned = device.type == "cpu"
+        self.__is_pinned = device.type == "cpu" and pin_memory
 
         self.__cache_tensors = []
         self.__current_cache_tensor = 0
@@ -608,9 +610,12 @@ class LayerOffloadConductor:
             self.__layer_transfer_stream = None
             self.__activations_transfer_stream = None
 
-        self.__train_device_layer_allocator = StaticLayerAllocator(self.__train_device)
-        self.__temp_device_layer_allocator = StaticLayerAllocator(self.__temp_device)
-        self.__temp_device_activations_allocator = StaticActivationAllocator(self.__temp_device)
+        # pinned host memory is only needed for asynchronous (non_blocking) copies. Without async transfers, no
+        # memory is registered with the driver at all.
+        pin_memory = self.__async_transfer
+        self.__train_device_layer_allocator = StaticLayerAllocator(self.__train_device, pin_memory)
+        self.__temp_device_layer_allocator = StaticLayerAllocator(self.__temp_device, pin_memory)
+        self.__temp_device_activations_allocator = StaticActivationAllocator(self.__temp_device, pin_memory)
 
         self.__layer_train_event_map = []
         self.__layer_transfer_event_map = []

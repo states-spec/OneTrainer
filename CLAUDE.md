@@ -120,7 +120,7 @@ modules/trainer/GenericTrainer.py
 - `is_schedule_free` optimizers (SCHEDULE_FREE_ADAMW/SGD, PRODIGY_PLUS_SCHEDULE_FREE) are **silently forced** to a CONSTANT scheduler with no warmup (`create.py:1137`, `:1222`). PRODIGY_ADV is *not* flagged schedule-free.
 - `learning_rate_warmup_steps` (default **200**): >1 means steps (divided by grad-accum), 0<x≤1 means a *fraction* of total steps (so `1` means warmup across the whole run), ≤0 means none (`create.py:1127`).
 - The ADV optimizers get `k_warmup_steps = learning_rate_warmup_steps / grad_accum` for Kourkoutas-β (`create.py:689,714,746`). With LR warmup at 0, that warmup is 0 too.
-- `ADAM_8BIT` builds `bnb.optim.Adam` with UI default `optim_bits=32` (and ignores `optim_bits`/`amsgrad`), so it is effectively 32-bit Adam. Several other bnb optimizers show UI params (`optim_bits`, `min_8bit_size`, …) that `create.py` never passes.
+- `ADAM_8BIT`/`ADAMW_8BIT` use `bnb.optim.Adam8bit`/`AdamW8bit` (always 8-bit state; tensors < `min_8bit_size` stay fp32; `amsgrad` unsupported). bnb picks the update kernel from the stored state dtype, so old 32-bit state from a backup keeps working. Other bnb optimizers still show UI params that `create.py` never passes (e.g. `optim_bits`/`min_8bit_size`/`percentile_clipping` for ADAGRAD, RMSPROP, LARS; `block_wise` etc. for SGD_8BIT); their displayed defaults match the actual behavior.
 - bitsandbytes backs every `*_8BIT` optimizer plus ADAGRAD, RMSPROP, LARS, LAMB and AdEMAMix (even 32-bit), and the `INT_8`/`NFLOAT_4` weight dtypes. `*_COMPRESSED` dtypes need nvCOMP (NVIDIA only) and raise otherwise.
 - A layer-offloaded part in FINE_TUNE requires an optimizer with `supports_fused_back_pass()` **and** `fused_back_pass=true` (`create.py:141`).
 

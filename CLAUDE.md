@@ -70,7 +70,7 @@ modules/trainer/GenericTrainer.py
 2. `modules/util/create.py:create_optimizer`: add a `case`. The `match` has **no default**, so an unhandled enum gives `optimizer=None`.
 3. `modules/util/optimizer_util.py:OPTIMIZER_DEFAULT_PARAMETERS[Optimizer.X]` is **required**; `change_optimizer` raises KeyError when the optimizer is picked in the UI. Its keys decide which params the UI shows.
 4. A new hyperparameter needs: a `TrainOptimizerConfig` annotation plus a `default_values()` entry (`TrainConfig.py:35`/`:146`), a `KEY_DETAIL_MAP` entry in `modules/ui/BaseOptimizerParamsWindowView.py:32` (keys missing there are silently **hidden**), and use in `create.py`.
-5. Pin the package in `requirements-global.txt`. If it is CUDA-only (bnb etc.), say so; `requirements-rocm.txt` has no bitsandbytes.
+5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform (CUDA 0.49.1; ROCm 0.49.2, the first 0.49.x with a `rocm72` binary).
 
 ### New adapter (PEFT) type
 1. `PeftType` enum in `modules/util/enum/ModelType.py` (bottom of file).
@@ -111,7 +111,8 @@ modules/trainer/GenericTrainer.py
 **Config loading**
 - `BaseConfig.from_dict` (`:66`) **never fails**. A missing key keeps its default. A bad value prints `Could not set X as Y` (`:134`) and is skipped. Unknown keys (e.g. `weight_dtype` in the Chroma presets) are ignored silently.
 - Loading a preset in the UI applies it over **defaults**, not over the current config (`TopBarController.load_config_from_file:83`). A filename starting with `#` (except `#.json`) is treated as built-in and **skips migration**.
-- ADV optimizers (`Optimizer.is_adv`) get the UI's `OPTIMIZER_DEFAULT_PARAMETERS` on the CLI too: `scripts/train.py` loads the config on top of `default_optimizer_config()`, and `create_optimizer` fills unset (None) ADV settings from the table. Explicit non-null values always win, so a `create_train_files` template switched to an ADV optimizer keeps its written bools (e.g. ADOPT_ADV `use_atan2: false`, UI default true). **Other optimizers** still use `create.py`'s inline fallbacks on the CLI (differ from the UI for ADAM/ADAMW `fused`, PRODIGY, PRODIGY_PLUS_SCHEDULE_FREE, CAME(_8BIT), ADABELIEF, TIGER, YOGI).
+- Every optimizer gets the UI's `OPTIMIZER_DEFAULT_PARAMETERS` on the CLI too: `scripts/train.py` loads the config on top of `default_optimizer_config()`, and `create_optimizer` fills unset (None) settings from the table, except where None is itself a setting (`optimizer_util._NONE_IS_A_SETTING`, e.g. prodigy-plus `eps=None` = Adam-atan2). Explicit non-null values always win, so a `create_train_files` template switched to another optimizer keeps its written bools (e.g. ADOPT_ADV `use_atan2: false`, UI default true).
+- The UI defaults of LARS, LARS_8BIT, SGD_8BIT, SCHEDULE_FREE_SGD (`momentum: 0`) and DADAPT_ADA_GRAD (`eps: 0.0`) are rejected by their libraries, so these optimizers fail to build unless those values are changed.
 - A config file without `"__version"` is migrated from version 0, and `__migration_0` crashes (`unhashable type: 'dict'`) if `optimizer` is a nested object. Always keep `__version`.
 - Saved configs (`to_settings_dict`) point to `concept_file_name`/`sample_definition_file_name` by path. Exported "pack" configs (`to_pack_dict`) inline them. `samples.json` is re-read at every sample.
 - `layer_filter_preset` exists only for the UI. Training reads only `layer_filter` (comma-separated substrings, or regex when `layer_filter_regex`). In LoRA setups it applies to the denoiser wrapper only, not the TE LoRA. A filter that matches nothing raises `ValueError`.
@@ -148,7 +149,8 @@ modules/trainer/GenericTrainer.py
 - Intermediate saves and the final model contain **EMA weights** when EMA is on (`GenericTrainer.__save`, `end`). Backups keep raw weights plus EMA state.
 - EMA updates run only every `ema_update_step_interval` (default 5) optimizer steps but use the per-step decay, so the effective horizon is about `interval/(1-decay)` steps (≈5000 at defaults). Decay ramps as `(1+s)/(10+s)`. With EMA on, `non_ema_sampling=true` (default) doubles the sampling cost.
 - Ctrl-C in `scripts/train.py` saves only if `backup_before_save` is true, and `end()` saves nothing unless at least one optimizer step ran. On an exception, `end()` is skipped (no save) and only TensorBoard is stopped.
-- `update.sh`/`install.sh` run `pip --upgrade-strategy eager -r requirements-rocm.txt`, which **reinstalls the pinned torch** (`2.12.0+rocm7.2` today) over any manually installed build.
+- `update.sh`/`install.sh` run `pip --upgrade-strategy eager -r requirements-rocm.txt`, which **reinstalls the pinned torch** (`2.13.0+rocm7.2` today) over any manually installed build.
+- ROCm bitsandbytes (`libbitsandbytes_rocm72.so`) links hipBLAS/hipSPARSE/hipBLASLt from `/opt/rocm/lib` (a system ROCm 7.2 install) and runs `rocminfo`; without them, import logs a load error and only bnb features fail. bnb picks `libbitsandbytes_rocm<major><minor>` from `torch.version.hip`, so it must match the torch ROCm build.
 
 **Attention**
 - `attention_mechanism`: `SDP` = diffusers "native" (torch SDPA picks its own kernel); `FLASH` = diffusers "flash" (the flash-attn package, **CUDA-oriented**); `CUDNN` = **CUDA-only**; `FLEX` = torch FlexAttention. Chroma always passes a text attention mask when captions are padded (`BaseChromaSetup.predict`).
@@ -164,7 +166,7 @@ modules/trainer/GenericTrainer.py
 - Fedora Linux; AMD RX 7900 XTX (gfx1100 / RDNA3, 24 GB VRAM); Ryzen 9 7950X3D; 128 GB RAM.
 - ROCm 7.2.4 is the pinned, working stack. The upgrade path is torch 2.13.0+rocm7.2.
   - Do NOT suggest ROCm 10.0 / TheRock 7.14 builds. torch 2.12.0+rocm7.14.0 has an AOTriton packaging gap that wrongly enables flash SDPA and causes NaNs.
-  - Note: the repo's `requirements-rocm.txt` pins `torch==2.12.0+rocm7.2`, and `update.sh` will reinstall it (see Gotchas).
+  - Note: the repo's `requirements-rocm.txt` pins `torch==2.13.0+rocm7.2` (+ bitsandbytes 0.49.2), and `update.sh` will reinstall them (see Gotchas).
 - Never suggest CUDA-only fixes (bitsandbytes CUDA paths, xformers, CUDA flash-attn) without flagging them as CUDA-only and offering a ROCm alternative.
 - This build supports the `*_ADV` optimizers (ADOPT_ADV, PRODIGY_ADV, ADAMW_ADV). **ADOPT_ADV is the current best performer.** Prodigy-plus-schedule-free needs a CONSTANT scheduler (the code also forces it).
 - DoRA stacks with LoRA and LoKr here, but not with LoHa or OFT v2. With LoKr, `lokr_decompose_factor=-1` falls back to the full matrix at dim 32 on 3072-dim weights, so **use factor 16**.

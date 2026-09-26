@@ -892,6 +892,12 @@ class LayerOffloadConductor:
                         return
 
         with create_stream_context(self.__layer_transfer_stream):
+            if not is_forward and self.__async_transfer and device_equals(device, self.__temp_device):
+                # during the back pass, the layer's train event is recorded after its recompute, before its backward
+                # kernels are queued. Those kernels still read the weights, and the freed memory is reused for the next
+                # layer right away, so wait for all train work queued so far instead.
+                self.__layer_train_event_map[layer_index] = \
+                    SyncEvent(self.__train_stream.record_event(), f"train on {self.__train_device}")
             self.__wait_layer_train(layer_index)
             layer = self.__layers[layer_index]
             for module in layer.modules():

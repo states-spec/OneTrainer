@@ -111,7 +111,8 @@ modules/trainer/GenericTrainer.py
 **Config loading**
 - `BaseConfig.from_dict` (`:66`) **never fails**. A missing key keeps its default. A bad value prints `Could not set X as Y` (`:134`) and is skipped. Unknown keys (e.g. `weight_dtype` in the Chroma presets) are ignored silently.
 - Loading a preset in the UI applies it over **defaults**, not over the current config (`TopBarController.load_config_from_file:83`). A filename starting with `#` (except `#.json`) is treated as built-in and **skips migration**.
-- The CLI never applies `OPTIMIZER_DEFAULT_PARAMETERS`; only the UI (`change_optimizer`) does. A hand-written CLI config therefore gets the inline fallbacks in `create.py`, which can differ. Example: `ADOPT_ADV`/`ADAMW_ADV`/`PRODIGY_ADV` `beta1` falls back to **0** on the CLI but defaults to 0.9 in the UI. Set optimizer params explicitly in CLI configs.
+- ADV optimizers (`Optimizer.is_adv`) get the UI's `OPTIMIZER_DEFAULT_PARAMETERS` on the CLI too: `scripts/train.py` loads the config on top of `default_optimizer_config()`, and `create_optimizer` fills unset (None) ADV settings from the table. Explicit non-null values always win, so a `create_train_files` template switched to an ADV optimizer keeps its written bools (e.g. ADOPT_ADV `use_atan2: false`, UI default true). **Other optimizers** still use `create.py`'s inline fallbacks on the CLI (differ from the UI for ADAM/ADAMW `fused`, PRODIGY, PRODIGY_PLUS_SCHEDULE_FREE, CAME(_8BIT), ADABELIEF, TIGER, YOGI).
+- A config file without `"__version"` is migrated from version 0, and `__migration_0` crashes (`unhashable type: 'dict'`) if `optimizer` is a nested object. Always keep `__version`.
 - Saved configs (`to_settings_dict`) point to `concept_file_name`/`sample_definition_file_name` by path. Exported "pack" configs (`to_pack_dict`) inline them. `samples.json` is re-read at every sample.
 - `layer_filter_preset` exists only for the UI. Training reads only `layer_filter` (comma-separated substrings, or regex when `layer_filter_regex`). In LoRA setups it applies to the denoiser wrapper only, not the TE LoRA. A filter that matches nothing raises `ValueError`.
 
@@ -136,6 +137,12 @@ modules/trainer/GenericTrainer.py
 - `masked_prior_preservation_weight` only takes effect for `TrainingMethod.LORA` (`GenericTrainer.py:744`).
 - Toggling `masked_training`, `latent_caching` or TE training changes what gets cached. `clear_cache_before_training` defaults to true (the UI asks for confirmation). If you turn it off, clear `cache_dir` yourself after changing those settings (the full list of cache-key inputs is **unverified**; it lives in mgds `DiskCache`).
 - `dataloader_threads > 1` together with a text-encoder `offload_fraction > 0` raises an error.
+
+**Layer / activation offloading** (`modules/util/LayerOffloadConductor.py`)
+- Async transfers use three streams (train = default, layer, activations) and are on whenever `train_device` is `cuda` (ROCm too) and `async_offloading` is on. Temp-side caches are pinned with `cudaHostRegister`/`hipHostRegister` only in async mode; `async_offloading: false` = synchronous copies, no pinned memory.
+- Stream-ordering invariants (fixed bugs, keep them): a layer offloaded during the **back pass** must wait for all train work queued so far, because `after_layer()` runs at the end of the checkpoint recompute, before that layer's backward kernels (which read the weights; fused back pass also updates them) are queued. Pinned buffers must only be unpinned after a device sync (`unpin_tensors_`).
+- Offloading needs `gradient_checkpointing` (use_reentrant=True recompute drives `before_layer`/`after_layer` in backward). Only `nn.Linear`/`Conv2d` weights+bias (and SVD/NF4 parts) are offloaded (`quantization_util.get_offload_tensors`).
+- Test offloading on CPU by driving the real conductor with `train_device="cpu"`, `temp_device="cpu:1"` (different to `device_equals`, same memory).
 
 **EMA / saving**
 - Intermediate saves and the final model contain **EMA weights** when EMA is on (`GenericTrainer.__save`, `end`). Backups keep raw weights plus EMA state.

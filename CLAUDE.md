@@ -70,7 +70,7 @@ modules/trainer/GenericTrainer.py
 2. `modules/util/create.py:create_optimizer`: add a `case`. The `match` has **no default**, so an unhandled enum gives `optimizer=None`.
 3. `modules/util/optimizer_util.py:OPTIMIZER_DEFAULT_PARAMETERS[Optimizer.X]` is **required**; `change_optimizer` raises KeyError when the optimizer is picked in the UI. Its keys decide which params the UI shows.
 4. A new hyperparameter needs: a `TrainOptimizerConfig` annotation plus a `default_values()` entry (`TrainConfig.py:35`/`:146`), a `KEY_DETAIL_MAP` entry in `modules/ui/BaseOptimizerParamsWindowView.py:32` (keys missing there are silently **hidden**), and use in `create.py`.
-5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform (CUDA 0.49.1; ROCm 0.49.2, the first 0.49.x with a `rocm72` binary).
+5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform file, currently 0.49.2 everywhere (the first 0.49.x with a `rocm72` binary; its CUDA wheels ship cuda126 and cuda130 on Linux, cuda118–130 on Windows).
 
 ### New adapter (PEFT) type
 1. `PeftType` enum in `modules/util/enum/ModelType.py` (bottom of file).

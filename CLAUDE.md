@@ -26,7 +26,7 @@ pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, N
 - **No test suite.** No GitHub Actions workflows; only pre-commit.ci. Validate changes with `ruff check` plus a short real run (e.g. `--config-value epochs=1`).
 - UI checks without a display: build `PySide6TrainView` with `QT_QPA_PLATFORM=offscreen` (needs `libEGL.so.1`, `libxkbcommon`, `libfontconfig`) and use `widget.grab().save(...)`. Before `findChildren`, flush `deleteLater()`d widgets with `QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)`, because `processEvents()` leaves them in place. The CTk UI needs a Python with tkinter plus Xvfb.
 - `--config-value KEY=VALUE`: dotted keys walk nested `BaseConfig`s (`optimizer.beta1=0.9`); `None`/`null` clears a nullable field. `ema` is an `EMAMode` enum; the decay field is `ema_decay`.
-- `--preset-path` turns off migration for **both** files, so the config must already be in the current format (`__version` 11).
+- `--preset-path` turns off migration for **both** files, so the config must already be in the current format (`__version` 12).
 - Python: min 3.10, <3.14; conda path uses 3.13 (`lib.include.sh:35-37`). `OT_PREFER_VENV` defaults to `true` (Venv even if Conda is installed); set it to `false` to use Conda.
 
 ## Architecture (one training run)
@@ -36,7 +36,7 @@ scripts/train.py:main                      (CLI)          scripts/train_ui_qt.py
   .from_dict(preset, migrate=False)                          + secrets.json, trains in a thread on the *live* config object
   .from_dict(config, migrate=preset is None)
   --config-value overrides; secrets.json -> config.secrets
-  -> modules/util/create.py:create_trainer:1372  (cloud.enabled -> CloudTrainer | multi_gpu -> MultiTrainer | GenericTrainer)
+  -> modules/util/create.py:create_trainer:1486  (cloud.enabled -> CloudTrainer | multi_gpu -> MultiTrainer | GenericTrainer)
 
 modules/trainer/GenericTrainer.py
   start():88
@@ -45,11 +45,11 @@ modules/trainer/GenericTrainer.py
     model_setup.setup_optimizations  -> per-part quantize / checkpointing / offload, attention backend (BaseModelSetup._setup_model_part)
     model_setup.setup_train_device
     model_setup.setup_model          -> LoRAModuleWrapper(...) per part, load lora_state_dict, hook_to_module()
-                                        -> optimizer_util.init_model_parameters -> create.create_optimizer:128 + create_ema:1086
+                                        -> optimizer_util.init_model_parameters -> create.create_optimizer:207 + create_ema:1200
     create_data_loader   -> dataLoader/<Model>BaseDataLoader.py (registered per ModelType only)
                             DataLoaderText2ImageMixin._create_dataset:375 -> DataLoaderMgdsMixin._create_mgds -> mgds.MGDS/TrainDataLoader
     create_model_saver / create_model_sampler
-  train():616   per epoch: dataset.start_next_epoch() (does caching) -> lr scheduler created lazily (create_lr_scheduler:1111)
+  train():616   per epoch: dataset.start_next_epoch() (does caching) -> lr scheduler created lazily (create_lr_scheduler:1225)
                 per batch: setup.predict -> setup.calculate_loss -> backward -> (update step) clip_grad_norm,
                            optimizer.step (or fused back pass hooks) -> lr_scheduler.step -> after_optimizer_step -> ema.step
                 sample/backup/save go through TrainCommands; NaN loss raises RuntimeError
@@ -67,10 +67,10 @@ modules/trainer/GenericTrainer.py
 - `factory.get` returns `None` when nothing is registered. The failure then shows up later as a `NoneType` error. DataLoader and Sampler lookups fall back to `(model_type)` without a training method.
 
 ### New optimizer
-1. `modules/util/enum/Optimizer.py`: add the member. Update `is_adaptive`, `is_schedule_free` and `supports_fused_back_pass()` if they apply.
+1. `modules/util/enum/Optimizer.py`: add the member. Update `is_adaptive`, `is_schedule_free`, `supports_fused_back_pass()` and `is_adv_optm` (adv_optm classes: resume version gate) if they apply.
 2. `modules/util/create.py:create_optimizer`: add a `case`. The `match` has **no default**, so an unhandled enum gives `optimizer=None`.
 3. `modules/util/optimizer_util.py:OPTIMIZER_DEFAULT_PARAMETERS[Optimizer.X]` is **required**; `change_optimizer` raises KeyError when the optimizer is picked in the UI. Its keys decide which params the UI shows.
-4. A new hyperparameter needs: a `TrainOptimizerConfig` annotation plus a `default_values()` entry (`TrainConfig.py:35`/`:146`), a `KEY_DETAIL_MAP` entry in `modules/ui/BaseOptimizerParamsWindowView.py:32` (keys missing there are silently **hidden**), and use in `create.py`.
+4. A new hyperparameter needs: a `TrainOptimizerConfig` annotation plus a `default_values()` entry (`TrainConfig.py:35`/`:146`), a `KEY_DETAIL_MAP` entry in `modules/ui/BaseOptimizerParamsWindowView.py:33` (keys missing there are silently **hidden**), and use in `create.py`.
 5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform file, currently 0.49.2 everywhere (the first 0.49.x with a `rocm72` binary; its CUDA wheels ship cuda126 and cuda130 on Linux, cuda118–130 on Windows).
 
 ### New adapter (PEFT) type
@@ -95,7 +95,7 @@ modules/trainer/GenericTrainer.py
 ### New config field (TrainConfig or a sub-config)
 1. Add a class annotation **and** a `data.append((name, default, type, nullable))` in `default_values()`. Only fields in `default_values()` get (de)serialized; an annotation alone does nothing.
 2. Supported types: `str/int/float/bool`, `Enum`, a nested `BaseConfig`, and `list`/`dict` of those (`BaseConfig.to_dict/from_dict`).
-3. Renaming, moving or changing meaning: bump `config_version` (currently 11, `TrainConfig.py:596`) and add `__migration_N`. **Also edit the built-in `training_presets/**/#*.json` by hand**, because they load with `migrate=False`.
+3. Renaming, moving or changing meaning: bump `config_version` (currently 12, `TrainConfig.py:614`) and add `__migration_N`. **Also edit the built-in `training_presets/**/#*.json` by hand**, because they load with `migrate=False`.
 4. UI: add a widget in the matching `modules/ui/Base*View.py` (shared by Qt and CTk) bound by name: `self.components.entry(frame, row, col, ui_state, "field")` or `"transformer.field"`. Choices come from the matching `*Controller`. A new widget kind has to be added to **both** `modules/util/ui/pyside6_components.py` and `ctk_components.py` (same function names).
 5. Consume it in `modelSetup`/`create.py`/`dataLoader`. If it changes cached data, add it to the data loader's cache split names.
 6. Optimizer fields: see "New optimizer" step 4. Per-part fields go on `TrainModelPartConfig`; the migrations fan per-part values out over all 12 part names.
@@ -122,12 +122,20 @@ modules/trainer/GenericTrainer.py
 - `layer_filter_preset` exists only for the UI. Training reads only `layer_filter` (comma-separated substrings, or regex when `layer_filter_regex`). In LoRA setups it applies to the denoiser wrapper only, not the TE LoRA. A filter that matches nothing raises `ValueError`.
 
 **Optimizers / schedulers**
-- `is_schedule_free` optimizers (SCHEDULE_FREE_ADAMW/SGD, PRODIGY_PLUS_SCHEDULE_FREE) are **silently forced** to a CONSTANT scheduler with no warmup (`create.py:1137`, `:1222`). PRODIGY_ADV is *not* flagged schedule-free.
-- `learning_rate_warmup_steps` (default **200**): >1 means steps (divided by grad-accum), 0<x≤1 means a *fraction* of total steps (so `1` means warmup across the whole run), ≤0 means none (`create.py:1127`).
-- The ADV optimizers get `k_warmup_steps = learning_rate_warmup_steps / grad_accum` for Kourkoutas-β (`create.py:689,714,746`). With LR warmup at 0, that warmup is 0 too.
+- `is_schedule_free` optimizers (SCHEDULE_FREE_ADAMW/SGD, PRODIGY_PLUS_SCHEDULE_FREE) are **silently forced** to a CONSTANT scheduler with no warmup (`create.py:1251`, `:1336`). PRODIGY_ADV is *not* flagged schedule-free.
+- `learning_rate_warmup_steps` (default **200**): >1 means steps (divided by grad-accum), 0<x≤1 means a *fraction* of total steps (so `1` means warmup across the whole run), ≤0 means none (`create.py:1241`).
+- The ADV optimizers get `k_warmup_steps = learning_rate_warmup_steps / grad_accum` for Kourkoutas-β (`create.py:768,788,815`). With LR warmup at 0, that warmup is 0 too.
 - `ADAM_8BIT`/`ADAMW_8BIT` use `bnb.optim.Adam8bit`/`AdamW8bit` (always 8-bit state; tensors < `min_8bit_size` stay fp32; `amsgrad` unsupported). bnb picks the update kernel from the stored state dtype, so old 32-bit state from a backup keeps working. Other bnb optimizers still show UI params that `create.py` never passes (e.g. `optim_bits`/`min_8bit_size`/`percentile_clipping` for ADAGRAD, RMSPROP, LARS; `block_wise` etc. for SGD_8BIT); their displayed defaults match the actual behavior.
 - bitsandbytes backs every `*_8BIT` optimizer plus ADAGRAD, RMSPROP, LARS, LAMB and AdEMAMix (even 32-bit), and the `INT_8`/`NFLOAT_4` weight dtypes. `*_COMPRESSED` dtypes need nvCOMP (NVIDIA only) and raise otherwise.
-- A layer-offloaded part in FINE_TUNE requires an optimizer with `supports_fused_back_pass()` **and** `fused_back_pass=true` (`create.py:141`).
+- A layer-offloaded part in FINE_TUNE requires an optimizer with `supports_fused_back_pass()` **and** `fused_back_pass=true` (`create.py:225`).
+
+**adv_optm (the `*_ADV` optimizers, pinned 2.5.13)**
+- 2.5 removed AdEMAMix / Simplified AdEMAMix (`use_AdEMAMix`, `beta3_ema`, `alpha_grad`, `Simplified_AdEMAMix`), Lion's `clip_threshold` and `Lion_Prodigy_adv`. Their successor is `nesterov` + `nesterov_coef` (update = coef·momentum + (1−coef)·grad; `None` = beta1/momentum; needs beta1/momentum > 0). The bitsandbytes `ADEMAMIX`/`ADEMAMIX_8BIT` optimizers are separate and unchanged, and so is the shared `alpha` field.
+- `orthogonal_gradient` is a mode string (`disabled`/`flattened`/`iterative`), not a bool: adv_optm returns `None` for a bool mode, which nulls every gradient. `create._adv_orthograd_mode` maps a leftover bool (also in the Muon aux-Adam dict). `nnmf_factor` became `state_precision="factored"` except on LION_ADV, which has no `state_precision`. `__migration_11` does these renames.
+- `state_precision` values that work are listed by `optimizer_util.adv_state_precisions` (UI dropdown and a `ValueError` in `create.py`): `fp16` breaks everything but ADOPT_ADV, `factored` breaks ADAMUON_ADV, and SINKSGD_ADV `factored` with momentum 0 is passed as `auto` (no state to factor). Muon/AdaMuon without the aux Adam crash on 1D params (biases, norms) in both 2.2.3 and 2.5.13; LoRA params are 2D.
+- Resuming: optimizer.pt carries `adv_optm_version`. A different major.minor (or none, i.e. ≤2.2) drops the optimizer state with a warning; weights/EMA/progress still resume. On load, `create.py` also works around two adv_optm 2.5.13 bugs: it sets `actual_state_precision` on groups that lack it (Lion, all-factored), and `_restore_adv_optm_state_dtypes` puts the saved state tensors back after `load_state_dict`, because torch's per-param cast plus adv_optm's re-cast broke `int8_sr` (signed → uint8), fp32 state on bf16 weights, and fp32 vector state in `factored` mode.
+- Muon groups are saved as `<name>_<optim_type>`; `create_optimizer` maps them back whenever any group has an `optim_type` (before this, Muon without the aux Adam silently resumed with a fresh state).
+- `centered_wd` > 0 stores an anchor copy of the weights (`centered_wd_mode`, default float8 e4m3, also for LoRA params). float8 is a storage-only cast; untested on ROCm.
 
 **Adapters**
 - DoRA is `lora_decompose` for LoRA and `lokr_weight_decompose` for LoKr. LoHa and OFT v2 have no DoRA path; `lora_decompose` is ignored for them.

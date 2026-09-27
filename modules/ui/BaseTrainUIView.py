@@ -6,6 +6,8 @@ from modules.util.enum.DataType import DataType
 from modules.util.enum.GradientReducePrecision import GradientReducePrecision
 from modules.util.enum.ImageFormat import ImageFormat
 from modules.util.enum.PathIOType import PathIOType
+from modules.util.enum.TrainingMethod import TrainingMethod
+from modules.util.ui.training_method_notice import build_training_method_notice
 
 
 class BaseTrainUIView(ABC):
@@ -315,41 +317,49 @@ class BaseTrainUIView(ABC):
         self.components.entry(frame, 6, 1, ui_state, "save_filename_prefix")
 
     def build_embedding_tab_content(self, frame, controller, ui_state):
+        in_use = build_training_method_notice(self.components, frame, 0, 2, controller.train_config, ui_state,
+                                              TrainingMethod.EMBEDDING)
+        inputs = []
+
         # embedding model name
         self.components.label(frame, 0, 0, "Base embedding",
                          tooltip="The base embedding to train on. Leave empty to create a new embedding")
-        self.components.path_entry(
+        inputs.append(self.components.path_entry(
             frame, 0, 1, ui_state, "embedding.model_name",
             mode="file", path_modifier=path_util.json_path_modifier
-        )
+        ))
 
         # token count
         self.components.label(frame, 1, 0, "Token count",
                          tooltip="The token count used when creating a new embedding. Leave empty to auto detect from the initial embedding text.")
-        self.components.entry(frame, 1, 1, ui_state, "embedding.token_count")
+        inputs.append(self.components.entry(frame, 1, 1, ui_state, "embedding.token_count"))
 
         # initial embedding text
         self.components.label(frame, 2, 0, "Initial embedding text",
                          tooltip="The initial embedding text used when creating a new embedding")
-        self.components.entry(frame, 2, 1, ui_state, "embedding.initial_embedding_text")
+        inputs.append(self.components.entry(frame, 2, 1, ui_state, "embedding.initial_embedding_text"))
 
         # embedding weight dtype
         self.components.label(frame, 3, 0, "Embedding Weight Data Type",
                          tooltip="The Embedding weight data type used for training. This can reduce memory consumption, but reduces precision")
-        self.components.options_kv(frame, 3, 1, [
+        inputs.append(self.components.options_kv(frame, 3, 1, [
             ("float32", DataType.FLOAT_32),
             ("bfloat16", DataType.BFLOAT_16),
-        ], ui_state, "embedding_weight_dtype")
+        ], ui_state, "embedding_weight_dtype"))
 
         # placeholder
         self.components.label(frame, 4, 0, "Placeholder",
                          tooltip="The placeholder used when using the embedding in a prompt")
-        self.components.entry(frame, 4, 1, ui_state, "embedding.placeholder")
+        inputs.append(self.components.entry(frame, 4, 1, ui_state, "embedding.placeholder"))
 
         # output embedding
         self.components.label(frame, 5, 0, "Output embedding",
                          tooltip="Output embeddings are calculated at the output of the text encoder, not the input. This can improve results for larger text encoders and lower VRAM usage.")
-        self.components.switch(frame, 5, 1, ui_state, "embedding.is_output_embedding")
+        inputs.append(self.components.switch(frame, 5, 1, ui_state, "embedding.is_output_embedding"))
+
+        if not in_use:
+            for component in inputs:
+                self.components.set_widget_enabled(component, False)
 
     def build_tools_tab_content(self, frame, controller, ui_state):
         # dataset

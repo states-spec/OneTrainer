@@ -320,6 +320,8 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.tabview.addTab(self.lora_tab, "LoRA")
         self._tab_widgets["LoRA"] = self.lora_tab
 
+        self._refresh_embedding_tab()
+
         self.settings_tab = PySide6SettingsTabView(
             None,
             SettingsTabController(self.ui_settings, apply_ui_settings, needs_restart=("ui_scale",), supports_font_size=True),
@@ -367,6 +369,8 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             self.training_tab.refresh_ui()
         if self.lora_tab:
             self.lora_tab.refresh_ui()
+        if 'embedding' in self._tab_widgets:
+            self._refresh_embedding_tab()
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
@@ -385,16 +389,27 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
 
         if self.lora_tab:
             self.lora_tab.refresh_ui()
+        if 'embedding' in self._tab_widgets:
+            self._refresh_embedding_tab()
 
-        if training_method != TrainingMethod.EMBEDDING and 'embedding' in self._tab_widgets:
-            self.tabview.removeTab(self.tabview.indexOf(self._tab_widgets['embedding']))
-            del self._tab_widgets['embedding']
-
-        if training_method == TrainingMethod.EMBEDDING and 'embedding' not in self._tab_widgets:
-            tab_page = self._create_scrollable_tab(self._configure_embedding_frame)
-            # keep settings as the last tab
-            self.tabview.insertTab(self.tabview.indexOf(self._tab_widgets['settings']), tab_page, 'embedding')
-            self._tab_widgets['embedding'] = tab_page
+    def _refresh_embedding_tab(self):
+        # always shown, like the LoRA tab. Rebuilt on changes, because its notice depends on the training method and
+        # the model type.
+        page = self._create_scrollable_tab(self._configure_embedding_frame)
+        old = self._tab_widgets.get('embedding')
+        if old is None:
+            settings = self._tab_widgets.get('settings')
+            self.tabview.insertTab(self.tabview.indexOf(settings) if settings is not None else self.tabview.count(),
+                                   page, 'embedding')
+        else:
+            index = self.tabview.indexOf(old)
+            was_current = self.tabview.currentIndex() == index
+            self.tabview.removeTab(index)
+            old.deleteLater()
+            self.tabview.insertTab(index, page, 'embedding')
+            if was_current:
+                self.tabview.setCurrentIndex(index)
+        self._tab_widgets['embedding'] = page
 
     def load_preset(self):
         if self.additional_embeddings_tab:

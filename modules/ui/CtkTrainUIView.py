@@ -410,6 +410,9 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.lora_tab:
             self.lora_tab.refresh_ui()
 
+        if self.tabview and "embedding" in self.tabview._tab_dict:
+            self._refresh_embedding_tab()
+
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
@@ -436,11 +439,19 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.lora_tab:
             self.lora_tab.refresh_ui()
 
-        if training_method != TrainingMethod.EMBEDDING and "embedding" in self.tabview._tab_dict:
-            self.tabview.delete("embedding")
+        self._refresh_embedding_tab()
 
-        if training_method == TrainingMethod.EMBEDDING and "embedding" not in self.tabview._tab_dict:
-            self.embedding_tab(self.tabview.insert(self.tabview.index("settings"), "embedding"))
+    def _refresh_embedding_tab(self):
+        # always shown, like the LoRA tab. Rebuilt on changes, because its notice depends on the training method and
+        # the model type.
+        exists = "embedding" in self.tabview._tab_dict
+        was_current = exists and self.tabview.get() == "embedding"
+        index = self.tabview.index("embedding" if exists else "settings")
+        if exists:
+            self.tabview.delete("embedding")
+        self.embedding_tab(self.tabview.insert(index, "embedding"))
+        if was_current:
+            self.tabview.set("embedding")
 
     def load_preset(self):
         if not self.tabview:

@@ -1,6 +1,8 @@
 
 from modules.util import path_util
 from modules.util.enum.ModelType import PeftType
+from modules.util.enum.TrainingMethod import TrainingMethod
+from modules.util.ui.training_method_notice import build_training_method_notice
 from modules.util.ui.validation_helpers import check_range
 
 
@@ -9,21 +11,14 @@ class BaseLoraTabView:
         self.components = components
 
     def build(self, frame, controller, ui_state, setup_lora_callback):
+        # before the Type dropdown, whose command builds the options right away
+        self.in_use = build_training_method_notice(self.components, frame, 0, 2, controller.train_config, ui_state,
+                                                   TrainingMethod.LORA)
+
         self.components.label(frame, 0, 0, "Type",
                               tooltip="The type of low-parameter finetuning method.")
         self.components.options_kv(frame, 0, 1, controller.get_peft_types(),
                                    ui_state, "peft_type", command=setup_lora_callback)
-
-        if not controller.is_active():
-            # this tab is visible for every training method; say why its settings are disabled
-            notice = self.components.inline_frame(frame, 0, 2)
-            if controller.is_supported():
-                self.components.label(notice, 0, 0, "Not used: the training method (top right) is not LoRA",
-                                      tooltip="These settings only apply to LoRA training. They are kept, and used again once LoRA is selected.")
-                self.components.button(notice, 0, 1, "Switch to LoRA", lambda: controller.activate(ui_state),
-                                       tooltip="Set the training method to LoRA", sticky="nw")
-            else:
-                self.components.label(notice, 0, 0, "Not used: this model type does not support LoRA training")
 
     def build_lora_options(self, master, controller, ui_state, peft_type: PeftType):
         if peft_type == PeftType.LOHA:
@@ -174,5 +169,5 @@ class BaseLoraTabView:
                                   tooltip=f"Bundles any additional embeddings into the {name} output file, rather than as separate files")
             self.components.switch(master, 6, 4, ui_state, "bundle_additional_embeddings")
 
-        if not controller.is_active():
+        if not self.in_use:
             self.components.set_widget_enabled(master, False)

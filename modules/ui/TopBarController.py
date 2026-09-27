@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import traceback
 import webbrowser
 from contextlib import suppress
@@ -101,6 +102,11 @@ class TopBarController:
             return None
         except Exception:
             print(traceback.format_exc())
+            if os.path.basename(filename) == "#.json":
+                # the UI keeps its defaults and overwrites #.json with them on close, so keep the unreadable state
+                with suppress(OSError):
+                    shutil.copyfile(filename, filename + ".bak")
+                    print(f"Could not restore the last session. A copy of {filename} was saved as {filename}.bak")
             return None
 
     def save_secrets(self, path) -> str:

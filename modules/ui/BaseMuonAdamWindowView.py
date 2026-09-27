@@ -1,3 +1,5 @@
+from modules.util.enum.Optimizer import Optimizer
+from modules.util.optimizer_util import adv_state_precisions
 
 
 class BaseMuonAdamWindowView:
@@ -17,12 +19,16 @@ class BaseMuonAdamWindowView:
             'weight_decay': {'title': 'Weight Decay', 'tooltip': 'Regularization to prevent overfitting.', 'type': 'float'},
             'use_orthograd': {'title': 'use_orthograd', 'tooltip': 'Use orthograd method', 'type': 'bool'},
             'nnmf_factor': {'title': 'Factored Optimizer', 'tooltip': 'Enables a memory-efficient mode by applying fast low-rank factorization to the optimizers states. It combines factorization for magnitudes with 1-bit compression for signs, drastically reducing VRAM usage and allowing for larger models or batch sizes. This is an approximation which may slightly alter training dynamics.', 'type': 'bool'},
-            'orthogonal_gradient': {'title': 'OrthoGrad', 'tooltip': 'Reduces overfitting by removing the gradient component parallel to the weight, thus improving generalization.', 'type': 'bool'},
+            'nesterov': {'title': 'Nesterov', 'tooltip': 'Whether to use Nesterov momentum. Its mixing is set by Nesterov Coefficient.', 'type': 'bool'},
+            'nesterov_coef': {'title': 'Nesterov Coefficient', 'tooltip': 'Mixing coefficient of the Nesterov update: coef * momentum + (1 - coef) * gradient. Empty uses Beta1 (or the momentum value). Lower values weight the current gradient more; this replaces the former Simplified AdEMAMix "Grad α". Only used when Nesterov is on and Beta1/momentum is above 0.', 'type': 'float'},
+            'state_precision': {'title': 'State Precision', 'tooltip': 'Storage format of the optimizer state. auto: the parameter dtype (the former behavior). fp32: full precision. factored: rank-1 factored low-memory state (the former Factored Optimizer option). bf16_sr / int8_sr: bfloat16 / 8-bit state with stochastic rounding. fp16: half precision (ADOPT_ADV only). Only the modes that work with the selected optimizer are listed.', 'type': 'choice', 'values': adv_state_precisions},
+            'factored_2nd': {'title': 'Factored 2nd Moment', 'tooltip': 'Factorizes only the second moment (the variance estimate) to save memory, while the first moment keeps the State Precision format. Works together with any State Precision.', 'type': 'bool'},
+            'fisher_wd': {'title': 'Fisher Weight Decay', 'tooltip': 'Scales the weight decay by the second-moment (Fisher) estimate, as in the FAdam paper, instead of applying it uniformly.', 'type': 'bool'},
+            'centered_wd': {'title': 'Centered Weight Decay', 'tooltip': 'Decays the weights toward their values at the start of training (the anchor) instead of toward zero. Can be combined with the normal weight decay. 0 or empty disables it. Stores a copy of the trained weights, see Anchor Precision.', 'type': 'float'},
+            'centered_wd_mode': {'title': 'Anchor Precision', 'tooltip': 'Storage format of the Centered Weight Decay anchor. full: the parameter dtype. float8: float8 e4m3 (default). int8 / int4: block-wise quantized. Only used when Centered Weight Decay is above 0.', 'type': 'choice', 'values': ['full', 'float8', 'int8', 'int4']},
+            'spectral_normalization': {'title': 'Spectral Scaling', 'tooltip': 'Scales each update by its spectral norm (estimated by power iteration), which makes the update size independent of the layer width or LoRA rank.', 'type': 'bool'},
+            'orthogonal_gradient': {'title': 'OrthoGrad', 'tooltip': 'Removes the gradient component parallel to the weight, which reduces overfitting and improves generalization. flattened: the original OrthoGrad over the whole tensor. iterative: a matrix-wise variant (adv_optm 2.5). disabled: off.', 'type': 'choice', 'values': ['disabled', 'flattened', 'iterative']},
             'use_atan2': {'title': 'Atan2 Scaling', 'tooltip': 'A robust replacement for eps, which also incorporates gradient clipping, bounding and stabilizing the optimizer updates.', 'type': 'bool'},
-            'use_AdEMAMix': {'title': 'AdEMAMix EMA', 'tooltip': 'Adds a second, slow-moving EMA, which is combined with the primary momentum to stabilize updates, and accelerate the training.', 'type': 'bool'},
-            'beta3_ema': {'title': 'Beta3 EMA', 'tooltip': 'Coefficient for slow-moving EMA of AdEMAMix.', 'type': 'float'},
-            'Simplified_AdEMAMix': {'title': 'Simplified AdEMAMix', 'tooltip': "Enables a simplified, single-EMA variant of AdEMAMix. Instead of blending two moving averages (fast and slow momentum), this version combines the raw current gradient (controlled by 'Grad α') directly with a single theory-based momentum. This makes the optimizer highly responsive to recent gradient information, which can accelerate training in all batch size scenarios when tuned correctly.", 'type': 'bool'},
-            'alpha_grad': {'title': 'Grad α', 'tooltip': 'Controls the mixing coefficient between raw gradients and momentum gradients in Simplified AdEMAMix. Higher values (e.g., 10-100) emphasize recent gradients, suitable for small batch sizes to reduce noise. Lower values (e.g., 0-1) emphasize historical gradients, suitable for large batch sizes for stability. Setting to 0 uses only momentum gradients without raw gradient contribution.', 'type': 'float'},
             'kourkoutas_beta': {'title': 'Kourkoutas Beta', 'tooltip': 'Enables a layer-wise dynamic β₂ adaptation. This feature makes the optimizer more responsive to "spiky" gradients by lowering β₂ during periods of high variance, and more stable during calm periods by raising β₂ towards its maximum. It can significantly improve training stability and final loss.', 'type': 'bool'},
         }
         # @formatter:on
@@ -44,7 +50,10 @@ class BaseMuonAdamWindowView:
 
             self.components.label(master, row, col, title, tooltip=tooltip)
 
-            if param_type != 'bool':
+            if param_type == 'choice':
+                values = arg_info['values'](Optimizer.ADAMW_ADV) if callable(arg_info['values']) else arg_info['values']
+                self.components.options(master, row, col + 1, values, ui_state, key)
+            elif param_type != 'bool':
                 self.components.entry(master, row, col + 1, ui_state, key)
             else:
                 self.components.switch(master, row, col + 1, ui_state, key)

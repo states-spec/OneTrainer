@@ -243,7 +243,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "max_unorm": 1.0,
     },
     Optimizer.LARS: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -253,7 +253,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "max_unorm": 0.02,
     },
     Optimizer.LARS_8BIT: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -292,7 +292,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "block_wise": True,
     },
     Optimizer.SGD_8BIT: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -310,7 +310,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "foreach": False,
     },
     Optimizer.SCHEDULE_FREE_SGD: {
-        "momentum": 0,
+        "momentum": 0.9,
         "weight_decay": 1e-2,
         "r": 0.0,
         "weight_lr_power": 2.0,
@@ -362,7 +362,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "momentum": 0,
         "log_every": 0,
         "weight_decay": 0.0,
-        "eps": 0.0,
+        "eps": 1e-6,
         "d0": 1e-6,
         "growth_rate": float('inf'),
     },

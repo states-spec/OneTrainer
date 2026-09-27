@@ -263,6 +263,8 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         self.tools_tab = self.create_tools_tab(self.tabview.add("tools"))
         self.additional_embeddings_tab = self.create_additional_embeddings_tab(self.tabview.add("additional embeddings"))
         self.cloud_tab = self.create_cloud_tab(self.tabview.add("cloud"))
+        # always shown, so the LoRA settings stay reachable while another training method is selected
+        self.lora_tab = CtkLoraTabView(self.tabview.add("LoRA"), LoraTabController(self.controller.train_config), self.ui_state)
 
         self.change_training_method(self.controller.train_config.training_method)
         self._update_additional_embeddings_tab(self.controller.train_config.model_type)
@@ -389,14 +391,12 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
-        if training_method != TrainingMethod.LORA and "LoRA" in self.tabview._tab_dict:
-            self.tabview.delete("LoRA")
-            self.lora_tab = None
+        if self.lora_tab:
+            self.lora_tab.refresh_ui()
+
         if training_method != TrainingMethod.EMBEDDING and "embedding" in self.tabview._tab_dict:
             self.tabview.delete("embedding")
 
-        if training_method == TrainingMethod.LORA and "LoRA" not in self.tabview._tab_dict:
-            self.lora_tab = CtkLoraTabView(self.tabview.add("LoRA"), LoraTabController(self.controller.train_config), self.ui_state)
         if training_method == TrainingMethod.EMBEDDING and "embedding" not in self.tabview._tab_dict:
             self.embedding_tab(self.tabview.add("embedding"))
 

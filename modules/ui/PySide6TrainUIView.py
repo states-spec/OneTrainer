@@ -295,6 +295,11 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.tabview.addTab(self.cloud_tab, "cloud")
         self._tab_widgets["cloud"] = self.cloud_tab
 
+        # always shown, so the LoRA settings stay reachable while another training method is selected
+        self.lora_tab = PySide6LoraTabView(None, LoraTabController(self.controller.train_config), self.ui_state)
+        self.tabview.addTab(self.lora_tab, "LoRA")
+        self._tab_widgets["LoRA"] = self.lora_tab
+
     def create_sampling_tab(self):
         tab_page = QWidget()
         tab_lo = QGridLayout(tab_page)
@@ -350,18 +355,13 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
-        if training_method != TrainingMethod.LORA and 'LoRA' in self._tab_widgets:
-            self.tabview.removeTab(self.tabview.indexOf(self._tab_widgets['LoRA']))
-            del self._tab_widgets['LoRA']
-            self.lora_tab = None
+        if self.lora_tab:
+            self.lora_tab.refresh_ui()
+
         if training_method != TrainingMethod.EMBEDDING and 'embedding' in self._tab_widgets:
             self.tabview.removeTab(self.tabview.indexOf(self._tab_widgets['embedding']))
             del self._tab_widgets['embedding']
 
-        if training_method == TrainingMethod.LORA and 'LoRA' not in self._tab_widgets:
-            self.lora_tab = PySide6LoraTabView(None, LoraTabController(self.controller.train_config), self.ui_state)
-            self.tabview.addTab(self.lora_tab, 'LoRA')
-            self._tab_widgets['LoRA'] = self.lora_tab
         if training_method == TrainingMethod.EMBEDDING and 'embedding' not in self._tab_widgets:
             tab_page = self._create_scrollable_tab(self._configure_embedding_frame)
             self.tabview.addTab(tab_page, 'embedding')

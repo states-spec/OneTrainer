@@ -14,6 +14,17 @@ class BaseLoraTabView:
         self.components.options_kv(frame, 0, 1, controller.get_peft_types(),
                                    ui_state, "peft_type", command=setup_lora_callback)
 
+        if not controller.is_active():
+            # this tab is visible for every training method; say why its settings are disabled
+            notice = self.components.inline_frame(frame, 0, 2)
+            if controller.is_supported():
+                self.components.label(notice, 0, 0, "Not used: the training method (top right) is not LoRA",
+                                      tooltip="These settings only apply to LoRA training. They are kept, and used again once LoRA is selected.")
+                self.components.button(notice, 0, 1, "Switch to LoRA", lambda: controller.activate(ui_state),
+                                       tooltip="Set the training method to LoRA", sticky="nw")
+            else:
+                self.components.label(notice, 0, 0, "Not used: this model type does not support LoRA training")
+
     def build_lora_options(self, master, controller, ui_state, peft_type: PeftType):
         if peft_type == PeftType.LOHA:
             name = "LoHa"
@@ -162,3 +173,6 @@ class BaseLoraTabView:
             self.components.label(master, 6, 3, "Bundle Embeddings",
                                   tooltip=f"Bundles any additional embeddings into the {name} output file, rather than as separate files")
             self.components.switch(master, 6, 4, ui_state, "bundle_additional_embeddings")
+
+        if not controller.is_active():
+            self.components.set_widget_enabled(master, False)

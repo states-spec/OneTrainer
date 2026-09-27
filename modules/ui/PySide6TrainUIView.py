@@ -18,21 +18,24 @@ from modules.ui.PySide6ModelTabView import PySide6ModelTabView
 from modules.ui.PySide6ProfilingWindowView import PySide6ProfilingWindowView
 from modules.ui.PySide6SampleWindowView import PySide6SampleWindowView
 from modules.ui.PySide6SamplingTabView import PySide6SamplingTabView
+from modules.ui.PySide6SettingsTabView import PySide6SettingsTabView
 from modules.ui.PySide6TopBarView import PySide6TopBarView
 from modules.ui.PySide6TrainingTabView import PySide6TrainingTabView
 from modules.ui.PySide6VideoToolUIView import PySide6VideoToolUIView
 from modules.ui.SamplingTabController import SamplingTabController
+from modules.ui.SettingsTabController import SettingsTabController
 from modules.ui.TopBarController import TopBarController
 from modules.ui.TrainingTabController import TrainingTabController
 from modules.ui.TrainUIController import TrainUIController
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.UISettingsConfig import UISettingsConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui import pyside6_components
-from modules.util.ui.pyside6_util import QtABCMeta
+from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings
 from modules.util.ui.PySide6UIState import PySide6UIState
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFileDialog, QGridLayout, QMainWindow, QMessageBox, QTabWidget, QWidget
 
@@ -51,6 +54,14 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.setWindowTitle("OneTrainer")
         self.setWindowIcon(QIcon("resources/icons/icon.png"))
         self.resize(1100, 740)
+
+        # UI preferences (theme, scale, window size), stored apart from the training config
+        self.ui_settings = UISettingsConfig.load()
+        self.ui_settings_state = PySide6UIState(self.ui_settings)
+        if self.ui_settings.remember_window_size and self.ui_settings.window_width > 0 and self.ui_settings.window_height > 0:
+            self.resize(self.ui_settings.window_width, self.ui_settings.window_height)
+        if self.ui_settings.start_maximized:
+            self.setWindowState(Qt.WindowState.WindowMaximized)
 
         self.status_label = None
         self.eta_label = None
@@ -106,9 +117,18 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             event.ignore()
             return
         self.top_bar_component.save_default()
+        self.__save_window_size()
         self.controller._stop_always_on_tensorboard()
         self.ui_state.remove_var_trace("workspace_dir", self.workspace_dir_trace_id)
         event.accept()
+
+    def __save_window_size(self):
+        if not self.ui_settings.remember_window_size:
+            return
+        size = self.normalGeometry().size() if self.isMaximized() or self.isFullScreen() else self.size()
+        self.ui_settings.window_width = size.width()
+        self.ui_settings.window_height = size.height()
+        self.ui_settings.save()
 
     # --- BaseTrainUIView abstract method implementations ---
 
@@ -300,6 +320,14 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.tabview.addTab(self.lora_tab, "LoRA")
         self._tab_widgets["LoRA"] = self.lora_tab
 
+        self.settings_tab = PySide6SettingsTabView(
+            None,
+            SettingsTabController(self.ui_settings, apply_ui_settings, needs_restart=("ui_scale",), supports_font_size=True),
+            self.ui_settings_state,
+        )
+        self.tabview.addTab(self.settings_tab, "settings")
+        self._tab_widgets["settings"] = self.settings_tab
+
     def create_sampling_tab(self):
         tab_page = QWidget()
         tab_lo = QGridLayout(tab_page)
@@ -364,7 +392,8 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
 
         if training_method == TrainingMethod.EMBEDDING and 'embedding' not in self._tab_widgets:
             tab_page = self._create_scrollable_tab(self._configure_embedding_frame)
-            self.tabview.addTab(tab_page, 'embedding')
+            # keep settings as the last tab
+            self.tabview.insertTab(self.tabview.indexOf(self._tab_widgets['settings']), tab_page, 'embedding')
             self._tab_widgets['embedding'] = tab_page
 
     def load_preset(self):

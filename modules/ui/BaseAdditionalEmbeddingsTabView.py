@@ -4,6 +4,26 @@ from modules.util import path_util
 
 
 class BaseAdditionalEmbeddingsTabView(BaseConfigListView):
+    support_notice = None
+
+    def update_supported(self):
+        # the tab stays visible for every model type; on one without embedding training, say so and disable it
+        supported = self.controller.is_supported()
+        if self.support_notice is not None:
+            self._destroy_widget(self.support_notice)
+            self.support_notice = None
+        if not supported:
+            self.support_notice = self.components.label(
+                self.top_frame, 0, 4, "Not used: this model type does not support embedding training",
+                tooltip="The embeddings are kept, and used again with a model type that supports embedding training.")
+        for widget in [getattr(self, "add_button", None), self.toggle_button, *self.widgets]:
+            if widget is not None:
+                self.components.set_widget_enabled(widget, supported)
+
+    def _update_widget_visibility(self):
+        # runs after every change to the list (build, add, clone, remove, reload), so new entries get the same state
+        super()._update_widget_visibility()
+        self.update_supported()
 
     def refresh_ui(self):
         if self.element_list is not None:

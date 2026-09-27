@@ -374,11 +374,9 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
-        # additional embeddings only apply to models that support embedding training
-        supported = TrainingMethod.EMBEDDING in model_type.supported_training_methods()
-        page = self._tab_widgets.get("additional embeddings")
-        if page is not None:
-            self.tabview.setTabVisible(self.tabview.indexOf(page), supported)
+        # always shown; it says so when the model type doesn't support embedding training
+        if self.additional_embeddings_tab:
+            self.additional_embeddings_tab.update_supported()
 
     def change_training_method(self, training_method: TrainingMethod):
         if not self.tabview:

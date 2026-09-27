@@ -416,18 +416,9 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
-        if not self.tabview:
-            return
-
-        # additional embeddings only apply to models that support embedding training
-        supported = TrainingMethod.EMBEDDING in model_type.supported_training_methods()
-        if not supported and "additional embeddings" in self.tabview._tab_dict:
-            self.tabview.delete("additional embeddings")
-            self.additional_embeddings_tab = None
-        elif supported and "additional embeddings" not in self.tabview._tab_dict:
-            # keep settings as the last tab
-            self.additional_embeddings_tab = self.create_additional_embeddings_tab(
-                self.tabview.insert(self.tabview.index("settings"), "additional embeddings"))
+        # always shown; it says so when the model type doesn't support embedding training
+        if self.additional_embeddings_tab:
+            self.additional_embeddings_tab.update_supported()
 
     def change_training_method(self, training_method: TrainingMethod):
         if not self.tabview:

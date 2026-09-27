@@ -103,10 +103,10 @@ class BaseConfigListView(ABC):
 
             self.__create_configs_dropdown()
             self.components.button(self.top_frame, 0, 1, "Add Config", self.__add_config, tooltip="Adds a new config, which are containers for concepts, which themselves contain your dataset", width=20, padx=5)
-            self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, tooltip=add_button_tooltip, width=30, padx=5)
+            self.add_button = self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, tooltip=add_button_tooltip, width=30, padx=5)
         else:
             self.top_frame = self._create_top_frame(master)
-            self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, width=20, padx=5)
+            self.add_button = self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, width=20, padx=5)
 
             self.current_config = getattr(self.controller.train_config, self.attr_name)
 

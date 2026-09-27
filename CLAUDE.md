@@ -150,6 +150,8 @@ modules/trainer/GenericTrainer.py
 - `masked_prior_preservation_weight` only takes effect for `TrainingMethod.LORA` (`GenericTrainer.py:744`).
 - Toggling `masked_training`, `latent_caching` or TE training changes what gets cached. `clear_cache_before_training` defaults to true (the UI asks for confirmation). If you turn it off, clear `cache_dir` yourself after changing those settings (the full list of cache-key inputs is **unverified**; it lives in mgds `DiskCache`).
 - `dataloader_threads > 1` together with a text-encoder `offload_fraction > 0` raises an error.
+- Caching runs the encoders (VAE, text encoders) in `dataloader_threads` concurrent threads (mgds `PipelineState` executor), so with the default 2, two encodes share the GPU at once. A `CheckFinite` module (`dataLoader/pipelineModules/`) in front of each disk cache stops caching with the file name when an encoding has NaN/inf. Suspected cause of random NaN latents plus later segfaults on ROCm (gfx1100, torch 2.13+rocm7.2); **unconfirmed**, test with `dataloader_threads: 1`.
+- The NaN-loss check runs **before** `optimizer.step()` (`GenericTrainer.train`), so a NaN batch never reaches the weights or optimizer state; with a fused back pass the update already happened during backward.
 
 **Layer / activation offloading** (`modules/util/LayerOffloadConductor.py`)
 - Async transfers use three streams (train = default, layer, activations) and are on whenever `train_device` is `cuda` (ROCm too) and `async_offloading` is on. Temp-side caches are pinned with `cudaHostRegister`/`hipHostRegister` only in async mode; `async_offloading: false` = synchronous copies, no pinned memory.

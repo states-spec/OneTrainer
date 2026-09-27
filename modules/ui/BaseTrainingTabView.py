@@ -69,7 +69,7 @@ class BaseTrainingTabView(ABC):
 
     def __setup_stable_diffusion_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_frame(column_0, 1, ui_state, supports_layer_offloading=False)
+        self.__create_text_encoder_frame(column_0, 1, ui_state)
         self.__create_embedding_frame(column_0, 2, ui_state)
 
         self.__create_base2_frame(column_1, 0, controller, ui_state, supports_circular_padding=True)
@@ -82,8 +82,8 @@ class BaseTrainingTabView(ABC):
 
     def __setup_stable_diffusion_3_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True, supports_layer_offloading=False)
-        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True, supports_layer_offloading=False)
+        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True)
+        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True)
         self.__create_text_encoder_n_frame(column_0, 3, ui_state, i=3, supports_include=True)
         self.__create_embedding_frame(column_0, 4, ui_state)
 
@@ -97,8 +97,8 @@ class BaseTrainingTabView(ABC):
 
     def __setup_stable_diffusion_xl_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_layer_offloading=False)
-        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_layer_offloading=False)
+        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1)
+        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2)
         self.__create_embedding_frame(column_0, 3, ui_state)
 
         self.__create_base2_frame(column_1, 0, controller, ui_state, supports_circular_padding=True)
@@ -111,7 +111,7 @@ class BaseTrainingTabView(ABC):
 
     def __setup_wuerstchen_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_frame(column_0, 1, ui_state, supports_layer_offloading=False)
+        self.__create_text_encoder_frame(column_0, 1, ui_state)
         self.__create_embedding_frame(column_0, 2, ui_state)
 
         self.__create_base2_frame(column_1, 0, controller, ui_state, supports_circular_padding=True)
@@ -137,7 +137,7 @@ class BaseTrainingTabView(ABC):
 
     def __setup_flux_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True, supports_layer_offloading=False)
+        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True)
         self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True, supports_sequence_length=True)
         self.__create_embedding_frame(column_0, 4, ui_state)
 
@@ -263,7 +263,7 @@ class BaseTrainingTabView(ABC):
     def __setup_hunyuan_video_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
         self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True)
-        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True, supports_layer_offloading=False)
+        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True)
         self.__create_embedding_frame(column_0, 4, ui_state)
 
         self.__create_base2_frame(column_1, 0, controller, ui_state, video_training_enabled=True)
@@ -276,8 +276,8 @@ class BaseTrainingTabView(ABC):
 
     def __setup_hi_dream_ui(self, column_0, column_1, column_2, controller, ui_state):
         self.__create_base_frame(column_0, 0, controller, ui_state)
-        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True, supports_layer_offloading=False)
-        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True, supports_layer_offloading=False)
+        self.__create_text_encoder_n_frame(column_0, 1, ui_state, i=1, supports_include=True)
+        self.__create_text_encoder_n_frame(column_0, 2, ui_state, i=2, supports_include=True)
         self.__create_text_encoder_n_frame(column_0, 3, ui_state, i=3, supports_include=True)
         self.__create_text_encoder_n_frame(column_0, 4, ui_state, i=4, supports_include=True, supports_layer_skip=False)
         self.__create_embedding_frame(column_0, 5, ui_state)
@@ -610,7 +610,7 @@ class BaseTrainingTabView(ABC):
         self.components.switch(frame, row, 1, ui_state, "unet.train")
         row += 1
 
-        row = self.__create_offloading_widgets(frame, row, ui_state, "unet", supports_layer_offloading=False)
+        row = self.__create_offloading_widgets(frame, row, ui_state, "unet", supports_activation_offloading=True)
 
         # train unet epochs
         self.components.label(frame, row, 0, "Stop Training After",
@@ -642,7 +642,7 @@ class BaseTrainingTabView(ABC):
         self.components.switch(frame, row, 1, ui_state, "prior.train")
         row += 1
 
-        row = self.__create_offloading_widgets(frame, row, ui_state, "prior", supports_layer_offloading=False)
+        row = self.__create_offloading_widgets(frame, row, ui_state, "prior", supports_activation_offloading=True)
 
         # train prior epochs
         self.components.label(frame, row, 0, "Stop Training After",

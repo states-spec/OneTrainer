@@ -9,6 +9,7 @@ from modules.util.convert.rescale_noise_scheduler_to_zero_terminal_snr import (
 )
 from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType
+from modules.util.LayerOffloadConductor import LayerOffloadConductor
 
 import torch
 from torch import Tensor
@@ -63,6 +64,9 @@ class StableDiffusionModel(BaseModel):
     image_depth_processor: DPTImageProcessor | None
     depth_estimator: DPTForDepthEstimation | None
 
+    text_encoder_offload_conductor: LayerOffloadConductor | None
+    unet_offload_conductor: LayerOffloadConductor | None
+
     # persistent embedding training data
     embedding: StableDiffusionModelEmbedding | None
     additional_embeddings: list[StableDiffusionModelEmbedding] | None
@@ -92,6 +96,9 @@ class StableDiffusionModel(BaseModel):
         self.unet = None
         self.image_depth_processor = None
         self.depth_estimator = None
+
+        self.text_encoder_offload_conductor = None
+        self.unet_offload_conductor = None
 
         self.embedding = None
         self.additional_embeddings = []

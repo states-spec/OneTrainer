@@ -11,6 +11,7 @@ from modules.util.convert.rescale_noise_scheduler_to_zero_terminal_snr import (
 from modules.util.enum.DataType import DataType
 from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType
+from modules.util.LayerOffloadConductor import LayerOffloadConductor
 
 import torch
 from torch import Tensor
@@ -71,6 +72,10 @@ class StableDiffusionXLModel(BaseModel):
 
     vae_train_dtype: DataType
 
+    text_encoder_1_offload_conductor: LayerOffloadConductor | None
+    text_encoder_2_offload_conductor: LayerOffloadConductor | None
+    unet_offload_conductor: LayerOffloadConductor | None
+
     # persistent embedding training data
     embedding: StableDiffusionXLModelEmbedding | None
     additional_embeddings: list[StableDiffusionXLModelEmbedding] | None
@@ -107,6 +112,10 @@ class StableDiffusionXLModel(BaseModel):
         self.vae_autocast_context = nullcontext()
 
         self.vae_train_dtype = DataType.FLOAT_32
+
+        self.text_encoder_1_offload_conductor = None
+        self.text_encoder_2_offload_conductor = None
+        self.unet_offload_conductor = None
 
         self.embedding = None
         self.additional_embeddings = []

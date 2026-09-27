@@ -11,8 +11,10 @@ from modules.util.torch_util import add_dummy_grad_fn_, has_grad_fn
 import torch
 from torch import nn
 
+from diffusers.models import StableCascadeUNet
 from diffusers.models.attention import BasicTransformerBlock, JointTransformerBlock
 from diffusers.models.transformers.sana_transformer import SanaTransformerBlock
+from diffusers.models.transformers.transformer_2d import Transformer2DModel
 from diffusers.models.transformers.transformer_hunyuan_video import (
     HunyuanVideoIndividualTokenRefinerBlock,
     HunyuanVideoSingleTransformerBlock,
@@ -310,22 +312,71 @@ def enable_checkpointing_for_basic_transformer_blocks(
         model: nn.Module,
         config: TrainConfig,
         part: TrainModelPartConfig,
-        supports_offloading: bool = True,
 ) -> LayerOffloadConductor | None:
     return enable_checkpointing(model, config, part, config.compile, [
             (BasicTransformerBlock  ,        []),
         ],
-        supports_offloading = supports_offloading,
     )
+
+def enable_checkpointing_for_stable_diffusion_unet(
+        model: nn.Module,
+        config: TrainConfig,
+        part: TrainModelPartConfig,
+) -> LayerOffloadConductor | None:
+    # The UNet's transformer blocks are the offloaded layers; resnets, samplers and embeddings stay on the train
+    # device. The conductor needs them in execution order (down, mid, up), which model.modules() doesn't give:
+    # it lists up_blocks before mid_block.
+    attentions = []
+    for block in [*model.down_blocks, model.mid_block, *model.up_blocks]:
+        for attention in getattr(block, "attentions", None) or []:
+            assert isinstance(attention, Transformer2DModel)
+            attentions.append(attention)
+
+    conductor = enable_checkpointing(model, config, part, config.compile, [
+        (attention.transformer_blocks, ["hidden_states"]) for attention in attentions
+    ])
+
+    if conductor is not None:
+        # model.enable_gradient_checkpointing() also checkpoints these blocks from Transformer2DModel. Nested inside
+        # that, the offload checkpoint's forward would run again in the middle of the back pass. Resnets keep
+        # diffusers' checkpointing.
+        for attention in attentions:
+            attention.gradient_checkpointing = False
+
+    return conductor
+
+def enable_checkpointing_for_wuerstchen_prior(
+        model: nn.Module,
+        config: TrainConfig,
+        part: TrainModelPartConfig,
+) -> LayerOffloadConductor | None:
+    # Only for offloading: without it, the prior keeps diffusers' own checkpointing. The offloaded layers are the
+    # prior's blocks in execution order: WuerstchenPrior's single block list, or StableCascadeUNet's down levels, then
+    # its up levels. Every block takes the activation as x. Embedding and scaling layers stay on the train device.
+    if isinstance(model, StableCascadeUNet):
+        if any(len(mappers) > 0 for mappers in [*model.down_repeat_mappers, *model.up_repeat_mappers]):
+            # blocks_repeat_mappers > 1 runs each block of a level several times per step
+            raise NotImplementedError("layer offloading doesn't support a Stable Cascade UNet that repeats its blocks")
+        lists = [(blocks, ["x"]) for blocks in [*model.down_blocks, *model.up_blocks]]
+    else:
+        lists = [(model.blocks, ["x"])]
+
+    conductor = enable_checkpointing(model, config, part, False, lists)
+
+    if conductor is not None:
+        # the model's own checkpointing would wrap the blocks a second time (see enable_checkpointing_for_stable_diffusion_unet)
+        model.gradient_checkpointing = False
+
+    return conductor
 
 def enable_checkpointing_for_clip_encoder_layers(
         model: nn.Module,
         config: TrainConfig,
         part: TrainModelPartConfig,
-):
+) -> LayerOffloadConductor | None:
     return enable_checkpointing(model, config, part, False, [
         (CLIPEncoderLayer, []), # No activation offloading for text encoders, because the output might be taken from the middle of the network
-    ], supports_offloading=False) # CLIP is non-offloadable; keep it plain-checkpointed so a migrated offload_fraction can't build a self-activating conductor
+    ])
 
 def enable_checkpointing_for_t5_encoder_layers(
         model: nn.Module,

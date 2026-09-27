@@ -1133,7 +1133,9 @@ def create_optimizer(
             old_group_optimizer_mapping = state_dict['param_group_optimizer_mapping']
 
             new_param_groups = optimizer.state_dict()['param_groups']
-            if config.optimizer.MuonWithAuxAdam:
+            # the same naming as init_model_parameters uses to save the mapping: every group of the Muon optimizers
+            # has an optim_type, also without the auxiliary Adam
+            if any('optim_type' in group for group in optimizer.param_groups):
                 new_group_mapping = []
                 for group in optimizer.param_groups:
                     original_name = group.get('name')

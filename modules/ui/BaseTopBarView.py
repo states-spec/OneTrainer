@@ -108,6 +108,7 @@ class BaseTopBarView:
         )
 
     def __change_model_type(self, model_type: ModelType):
+        self.controller.update_base_model_for(model_type, self.ui_state)
         self.change_model_type_callback(model_type)
         self.__create_training_method()
 

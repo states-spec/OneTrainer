@@ -72,6 +72,38 @@ class TopBarController:
                     nodes.append((os.path.splitext(entry.name)[0], path_util.canonical_join(dir, entry.name)))
         return nodes
 
+    def preset_base_models(self, dir: str = "training_presets") -> dict[ModelType, list[str]]:
+        # the base models the built-in presets use per model type, most used first
+        counts: dict[ModelType, dict[str, int]] = {}
+        for root, _, files in os.walk(dir):
+            for name in files:
+                if not (name.startswith("#") and name != "#.json" and name.endswith(".json")):
+                    continue
+                with suppress(Exception), open(os.path.join(root, name), "r") as f:
+                    preset = json.load(f)
+                    model_type = ModelType(preset.get("model_type", str(ModelType.STABLE_DIFFUSION_15)))
+                    base_model = preset.get("base_model_name")
+                    if base_model:
+                        type_counts = counts.setdefault(model_type, {})
+                        type_counts[base_model] = type_counts.get(base_model, 0) + 1
+        return {model_type: sorted(names, key=lambda n: -names[n]) for model_type, names in counts.items()}
+
+    def update_base_model_for(self, model_type: ModelType, ui_state):
+        # Switching the model type keeps the base model, so a base model left from another model type would be loaded
+        # (and downloaded) as this one. Replace it only while it is another model type's preset default (or empty);
+        # a model the user picked stays.
+        preset_base_models = self.preset_base_models()
+        current = self.train_config.base_model_name
+        own_defaults = preset_base_models.get(model_type, [])
+        other_defaults = {name for other_type, names in preset_base_models.items() if other_type != model_type
+                          for name in names}
+        if current in own_defaults or (current and current not in other_defaults):
+            return
+        new = own_defaults[0] if own_defaults else ""
+        if new != current:
+            self.train_config.base_model_name = new  # config first: the var's callbacks run before its trace
+            ui_state.get_var("base_model_name").set(new)
+
     def save_to_file(self, name) -> str:
         name = path_util.safe_filename(name)
         path = path_util.canonical_join("training_presets", f"{name}.json")

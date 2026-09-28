@@ -871,10 +871,14 @@ class GenericTrainer(BaseTrainer):
             if epoch_batch_count == 0 and epoch_started_at_step == 0:
                 # an empty epoch trains nothing, and the following ones are normally just as empty, so the run would
                 # count through its epochs without a step and end without saving
+                no_images = ("the enabled concepts have no images (check their paths, and Include Subdirectories for "
+                             "images in subfolders)")
+                if self.config.batch_size <= 1:
+                    raise RuntimeError(f"This epoch has no batches, so nothing can be trained: {no_images}.")
                 raise RuntimeError(
-                    f"This epoch has no batches, so nothing can be trained: no aspect ratio bucket has "
-                    f"{self.config.batch_size} samples (batches never mix buckets, and leftover samples are skipped). "
-                    f"Lower the batch size or add images"
+                    f"This epoch has no batches, so nothing can be trained: either {no_images}, or no aspect ratio "
+                    f"bucket has {self.config.batch_size} samples (batches never mix buckets, and leftover samples are "
+                    f"skipped). Lower the batch size or add images"
                     f"{', or turn off aspect ratio bucketing' if self.config.aspect_ratio_bucketing else ''}."
                 )
 

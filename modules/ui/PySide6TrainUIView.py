@@ -414,6 +414,10 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
     def load_preset(self):
         if self.additional_embeddings_tab:
             self.additional_embeddings_tab.refresh_ui()
+        # the concept and sample files the loaded config names (at startup the tabs are built from them afterwards)
+        for tab in (getattr(self, "concepts_tab", None), getattr(self, "sampling_tab", None)):
+            if tab is not None:
+                tab.reload_from_config()
 
     def _set_training_button_style(self, mode: str):
         if not self.training_button:

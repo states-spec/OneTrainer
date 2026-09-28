@@ -163,6 +163,7 @@ class CtkConceptWindowView(BaseConceptWindowView, ctk.CTkToplevel):
         self.caption_preview.configure(state="disabled")
 
     def destroy(self):
+        self.controller.close()
         if self.bucket_fig is not None:
             plt.close(self.bucket_fig)
             self.bucket_fig = None

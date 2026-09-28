@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ from modules.util.config.SecretsConfig import SecretsConfig
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
+from modules.util.optimizer_util import default_optimizer_config
 from modules.util.path_util import write_json_atomic
 
 # base models for the model types that have no built-in preset (the others use their presets' choice)
@@ -165,9 +167,15 @@ class TopBarController:
 
             with open(filename, "r") as f:
                 loaded_dict = json.load(f)
-                default_config = TrainConfig.default_values()
-                # built-in configs are always saved in the most recent version, so migration can be skipped
-                loaded_config = default_config.from_dict(loaded_dict, migrate=not is_built_in_preset).to_unpacked_config()
+            # built-in configs are always saved in the most recent version, so migration can be skipped
+            migrate = not is_built_in_preset
+            # (the migrations edit nested dicts in place, so each pass gets its own copy)
+            loaded_config = TrainConfig.default_values().from_dict(copy.deepcopy(loaded_dict), migrate=migrate)
+            # as scripts/train.py does: load again on top of the optimizer's defaults, so the optimizer settings the
+            # file leaves out get the UI's defaults and the ones it sets are kept
+            default_config = TrainConfig.default_values()
+            default_config.optimizer = default_optimizer_config(loaded_config.optimizer.optimizer)
+            loaded_config = default_config.from_dict(copy.deepcopy(loaded_dict), migrate=migrate).to_unpacked_config()
 
             with suppress(FileNotFoundError), open("secrets.json", "r") as f:
                 secrets_dict = json.load(f)

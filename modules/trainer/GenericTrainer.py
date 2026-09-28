@@ -87,6 +87,14 @@ class GenericTrainer(BaseTrainer):
         self.grad_hook_handles = []
 
     def start(self):
+        # checked up front: the saver only rejects an unsupported format when it first saves, after the training
+        formats = self.config.model_type.supported_output_formats(self.config.training_method)
+        if self.config.output_model_format not in formats:
+            raise ValueError(
+                f"Output format {self.config.output_model_format} can't save {self.config.training_method} training of "
+                f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
+            )
+
         if multi.is_master():
             self.__save_config_to_workspace()
 

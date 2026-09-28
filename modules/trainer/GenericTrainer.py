@@ -693,7 +693,10 @@ class GenericTrainer(BaseTrainer):
                                  initial=train_progress.epoch_step)
             else:
                 batches = self.data_loader.get_data_loader()
+            epoch_started_at_step = train_progress.epoch_step
+            epoch_batch_count = 0
             for batch in batches:
+                epoch_batch_count += 1
                 multi.sync_commands(self.commands)
                 if self.commands.get_stop_command():
                     multi.warn_parameter_divergence(self.parameters, train_device)
@@ -845,6 +848,16 @@ class GenericTrainer(BaseTrainer):
 
                 if self.commands.get_stop_command():
                     return
+
+            if epoch_batch_count == 0 and epoch_started_at_step == 0:
+                # an empty epoch trains nothing, and the following ones are normally just as empty, so the run would
+                # count through its epochs without a step and end without saving
+                raise RuntimeError(
+                    f"This epoch has no batches, so nothing can be trained: no aspect ratio bucket has "
+                    f"{self.config.batch_size} samples (batches never mix buckets, and leftover samples are skipped). "
+                    f"Lower the batch size or add images"
+                    f"{', or turn off aspect ratio bucketing' if self.config.aspect_ratio_bucketing else ''}."
+                )
 
             train_progress.next_epoch()
             self.callbacks.on_update_train_progress(train_progress, current_epoch_length, self.config.epochs)

@@ -113,6 +113,18 @@ class ConceptWindowController:
                     if file_index == image_preview_file_index:
                         break
 
+        try:
+            return self._build_preview(preview_image_path, preview_augmentations)
+        except Exception as e:
+            # a file that can't be read (empty, truncated, not an image, too large for PIL) or a mask that doesn't fit
+            # its image: show the placeholder and name the file, instead of the window failing to open
+            image = load_image("resources/icons/icon.png", 'RGB')
+            image.thumbnail((300, 300))
+            name = os.path.basename(preview_image_path)
+            error = str(e).replace(str(preview_image_path), name)
+            return image, f"{name}: can't be previewed ({type(e).__name__}: {error})", ""
+
+    def _build_preview(self, preview_image_path: str, preview_augmentations: bool):
         image = load_image(preview_image_path, 'RGB')
         image_tensor = functional.to_tensor(image)
 

@@ -85,7 +85,7 @@ class BaseConceptWidgetView:
                     break
         try:
             image = load_image(preview_path, convert_mode="RGBA")
-        except OSError:
+        except Exception:  # not only OSError: e.g. PIL's DecompressionBombError for images over 178 MP
             image = Image.new("RGBA", (150, 150), (200, 200, 200, 255))
         size = min(image.width, image.height)
         image = image.crop((

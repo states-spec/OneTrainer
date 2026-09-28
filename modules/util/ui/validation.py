@@ -25,6 +25,10 @@ TRAILING_SLASH_RE = re.compile(r"[\\/]$")
 ENDS_WITH_EXT = re.compile(r"\.[A-Za-z0-9]+$")
 HUGGINGFACE_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+# float settings that take negative values: the timestep distribution's bias and weight (e.g. a logit-normal mean
+# below 0), and Adafactor's decay rate (default -0.8). Every other float must be non-negative.
+SIGNED_FLOAT_FIELDS = {"noising_bias", "noising_weight", "decay_rate"}
+
 _INVALID_CHARS = {chr(c) for c in range(32)}
 _IS_WINDOWS = sys.platform == "win32"
 if _IS_WINDOWS:
@@ -224,6 +228,8 @@ class BaseFieldValidator(ABC):
                 if default_val == "":
                     return None
                 return "Value required"
+            if declared_type in (int, float):
+                return "Value required"  # an empty number would be stored as None in a field that can't be empty
             return None
 
         try:
@@ -231,7 +237,7 @@ class BaseFieldValidator(ABC):
                 v = int(value)
             elif declared_type is float:
                 v = float(value)
-                if v < 0:
+                if v < 0 and self.var_name.rsplit(".", 1)[-1] not in SIGNED_FLOAT_FIELDS:
                     return "Value must be non-negative"
             elif declared_type is bool:
                 if value.lower() not in ("true", "false", "0", "1"):

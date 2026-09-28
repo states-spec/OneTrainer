@@ -123,11 +123,13 @@ class PySide6VideoToolUIView(BaseVideoToolUIView, QDialog, metaclass=QtABCMeta):
         self._status_box.clear()
 
     def update_preview(self, preview_image, label_text: str):
-        # Called from the video tool's worker thread — defer to main thread
-        pixmap = QPixmap.fromImage(ImageQt(preview_image.convert("RGBA")))
-        self.schedule_on_main_thread(lambda: self._do_update_preview(pixmap, label_text))
+        # Called from the video tool's worker thread — defer to main thread. A QPixmap may only be made on the UI
+        # thread, so the worker converts to RGBA and the pixmap is built in the deferred call.
+        image = preview_image.convert("RGBA")
+        self.schedule_on_main_thread(lambda: self._do_update_preview(image, label_text))
 
-    def _do_update_preview(self, pixmap: QPixmap, label_text: str):
+    def _do_update_preview(self, image, label_text: str):
+        pixmap = QPixmap.fromImage(ImageQt(image))
         self._preview_label.setPixmap(
             pixmap.scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )

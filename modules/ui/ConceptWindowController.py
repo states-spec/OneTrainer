@@ -265,6 +265,7 @@ class ConceptWindowController:
            view.components.call_after(view.concept_stats_tab, 0, view._enable_scan_buttons)
            return
         subfolders = [concept_path]
+        visited = {os.path.realpath(concept_path)}
 
         stats_dict = concept_stats.init_concept_stats(advanced_checks)
         for path in subfolders:
@@ -272,7 +273,10 @@ class ConceptWindowController:
                 break
             stats_dict = concept_stats.folder_scan(path, stats_dict, advanced_checks, self.concept, start_time, wait_time, self.cancel_scan_flag)
             if self.concept.include_subdirectories and not self.cancel_scan_flag.is_set():     #add all subfolders of current directory to for loop
-                subfolders.extend([f for f in os.scandir(path) if f.is_dir() and not f.name.startswith('.')])
+                for f in os.scandir(path):
+                    if f.is_dir() and not f.name.startswith('.') and os.path.realpath(f.path) not in visited:
+                        visited.add(os.path.realpath(f.path))
+                        subfolders.append(f)
             self.concept.concept_stats = stats_dict
             #update GUI approx every half second
             if time.perf_counter() > (last_update + 0.5):

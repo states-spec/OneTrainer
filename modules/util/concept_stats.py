@@ -83,6 +83,23 @@ def init_concept_stats(advanced_checks : bool):
 
     return stats_dict
 
+def _image_size(path: str) -> tuple[int, int]:
+    # imagesize is fast but knows fewer formats; PIL reads the rest. (0, 0) for a file neither can read
+    try:
+        width, height = imagesize.get(path)
+        if width > 0 and height > 0:
+            return width, height
+    except Exception:
+        pass
+    try:
+        img = load_image(path)
+        width, height = img.size
+        img.close()
+        return width, height
+    except Exception:
+        return 0, 0
+
+
 def folder_scan(dir, stats_dict : dict, advanced_checks : bool, conceptconfig : ConceptConfig, start_time : float, wait_time : float, cancel_scan_flag : threading.Event):
     #break and return defaults if no path or nonexistent path
     if not os.path.isdir(dir):
@@ -113,7 +130,7 @@ def folder_scan(dir, stats_dict : dict, advanced_checks : bool, conceptconfig : 
                 if (basename + ".txt") in file_list_str:
                     stats_dict["paired_captions"] += 1
                     stats_dict["image_with_caption_count"] += 1
-                    with open(basename + ".txt", "r") as captionfile:
+                    with open(basename + ".txt", "r", encoding="utf-8", errors="replace") as captionfile:
                         captionlist = captionfile.read().splitlines()
                         #get character/word count of captions, split by newlines in each text file
                         for caption in captionlist:
@@ -128,14 +145,9 @@ def folder_scan(dir, stats_dict : dict, advanced_checks : bool, conceptconfig : 
                             stats_dict["avg_caption_length"][1] += (word_count - stats_dict["avg_caption_length"][1])/(stats_dict["image_count"] + stats_dict["video_count"])
 
                 #get image resolution info
-                try:    #use imagesize if possible due to better speed
-                    width, height = imagesize.get(path.path)
-                    if width == -1:     #if imagesize doesn't recognize format it returns (-1, -1)
-                        raise ValueError
-                except ValueError:     #use PIL if not supported by imagesize
-                    img = load_image(path.path)
-                    width, height = img.size
-                    img.close()
+                width, height = _image_size(path.path)
+                if width <= 0 or height <= 0:   #unreadable file: counted, but left out of the resolution stats
+                    continue
                 pixels = width*height
                 true_aspect = height/width
                 nearest_aspect = min(aspect_ratio_list, key=lambda x:abs(x-true_aspect))    #try to match math used in aspect bucketing
@@ -158,7 +170,7 @@ def folder_scan(dir, stats_dict : dict, advanced_checks : bool, conceptconfig : 
                 if (basename + ".txt") in file_list_str:
                     stats_dict["paired_captions"] += 1
                     stats_dict["video_with_caption_count"] += 1
-                    with open(basename + ".txt", "r") as captionfile:
+                    with open(basename + ".txt", "r", encoding="utf-8", errors="replace") as captionfile:
                         captionlist = captionfile.read().splitlines()
                         #get character/word count of captions, split by newlines in each text file
                         for caption in captionlist:
@@ -178,6 +190,8 @@ def folder_scan(dir, stats_dict : dict, advanced_checks : bool, conceptconfig : 
                 length = vid.get(cv2.CAP_PROP_FRAME_COUNT)
                 fps = vid.get(cv2.CAP_PROP_FPS)
                 vid.release()
+                if width <= 0 or height <= 0:   #unreadable video: counted, but left out of the resolution stats
+                    continue
 
                 pixels = width*height
                 true_aspect = height/width

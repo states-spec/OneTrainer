@@ -17,6 +17,7 @@ from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.trainer.BaseTrainer import BaseTrainer
 from modules.util import create, huggingface_util, path_util
 from modules.util.bf16_stochastic_rounding import set_seed as bf16_stochastic_rounding_set_seed
+from modules.util.cache_util import changed_cache_settings, save_cache_settings
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.compile_util import init_compile, reset_compile
@@ -89,8 +90,18 @@ class GenericTrainer(BaseTrainer):
         if multi.is_master():
             self.__save_config_to_workspace()
 
-            if self.config.clear_cache_before_training and self.config.latent_caching:
-                self.__clear_cache()
+            if self.config.latent_caching:
+                if self.config.clear_cache_before_training:
+                    self.__clear_cache()
+                else:
+                    changed = changed_cache_settings(self.config)
+                    if changed is None:
+                        print("The cache has no record of the settings it was made with, so it is rebuilt.")
+                        self.__clear_cache()
+                    elif changed:
+                        print(f"The cache was made with different settings ({', '.join(changed)}), so it is rebuilt.")
+                        self.__clear_cache()
+                save_cache_settings(self.config)
 
         if self.config.train_dtype.enable_tf():
             torch.backends.cuda.matmul.allow_tf32 = True

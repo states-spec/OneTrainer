@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from modules.util.config.UISettingsConfig import UISettingsConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui import pyside6_components
-from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings
+from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings, file_dialog_options
 from modules.util.ui.PySide6UIState import PySide6UIState
 
 from PySide6.QtCore import Qt, QTimer
@@ -324,7 +325,8 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
 
         self.settings_tab = PySide6SettingsTabView(
             None,
-            SettingsTabController(self.ui_settings, apply_ui_settings, needs_restart=("ui_scale",), supports_font_size=True),
+            SettingsTabController(self.ui_settings, apply_ui_settings, needs_restart=("ui_scale",), supports_font_size=True,
+                                  supports_system_file_dialogs=sys.platform.startswith("linux")),
             self.ui_settings_state,
         )
         self.tabview.addTab(self.settings_tab, "settings")
@@ -432,13 +434,13 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
     def export_training(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Export Training Config", "config.json",
-            "JSON Files (*.json);;All Files (*.*)"
+            "JSON Files (*.json);;All Files (*.*)", options=file_dialog_options(),
         )
         if file_path:
             self.controller.export_training(file_path)
 
     def generate_debug_package(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Save Debug Package", ".")
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Save Debug Package", ".", file_dialog_options(QFileDialog.Option.ShowDirsOnly))
         if not dir_path:
             return
         self.controller.generate_debug_package(Path(dir_path) / "OneTrainer_debug_report.zip")

@@ -18,6 +18,7 @@ class UISettingsConfig(BaseConfig):
     start_maximized: bool
     window_width: int
     window_height: int
+    system_file_dialogs: bool
 
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(data)
@@ -34,6 +35,9 @@ class UISettingsConfig(BaseConfig):
         data.append(("start_maximized", False, bool, False))
         data.append(("window_width", 0, int, False))  # last window size, 0 = the default size
         data.append(("window_height", 0, int, False))
+        # Linux, Qt UI: the desktop's own file dialog (GTK, portal or KDE) instead of Qt's. Off by default, because it
+        # can freeze or crash OneTrainer on some desktops (the pip Qt build loads the desktop's dialog code)
+        data.append(("system_file_dialogs", False, bool, False))
 
         return UISettingsConfig(data)
 

@@ -5,6 +5,7 @@ from modules.ui.TopBarController import TopBarController
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui import pyside6_components
+from modules.util.ui.pyside6_util import file_dialog_options
 
 from PySide6.QtWidgets import QFileDialog, QWidget
 
@@ -43,7 +44,7 @@ class PySide6TopBarView(BaseTopBarView, QWidget):
         widget.deleteLater()
 
     def _show_save_dialog(self, initial_dir: str, callback):
-        path, _ = QFileDialog.getSaveFileName(self, "Save config", initial_dir, "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save config", initial_dir, "JSON (*.json)", options=file_dialog_options())
         if path:
             # the native dialog doesn't reliably append the filter's extension on every platform
             if not path.endswith(".json"):
@@ -51,6 +52,6 @@ class PySide6TopBarView(BaseTopBarView, QWidget):
             callback(path)
 
     def _show_open_dialog(self, initial_dir: str, callback):
-        path, _ = QFileDialog.getOpenFileName(self, "Load config", initial_dir, "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load config", initial_dir, "JSON (*.json)", options=file_dialog_options())
         if path:
             callback(path)

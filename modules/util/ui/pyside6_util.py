@@ -9,7 +9,7 @@ from modules.util.enum.UITheme import UITheme
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QStyleFactory, QToolTip, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QStyleFactory, QToolTip, QWidget
 
 
 class QtABCMeta(type(QWidget), ABCMeta):
@@ -46,6 +46,7 @@ _STYLESHEET = """
 _light_palette: QPalette | None = None
 _default_font_point_size: float | None = None
 _current_theme: UITheme | None = None
+_system_file_dialogs = False
 
 
 def _dark_palette() -> QPalette:
@@ -123,6 +124,8 @@ def apply_font_size(app: QApplication, point_size: int):
 
 def apply_ui_settings(settings: UISettingsConfig):
     # the UI scale is applied by create_application, Qt can't change it while running
+    global _system_file_dialogs
+    _system_file_dialogs = settings.system_file_dialogs
     app = QApplication.instance()
     if settings.theme != _current_theme:
         apply_theme(app, settings.theme)
@@ -144,6 +147,8 @@ def create_application() -> QApplication:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     settings = UISettingsConfig.load()
+    global _system_file_dialogs
+    _system_file_dialogs = settings.system_file_dialogs
     # Qt reads the scale factor once, when the application is created. A value set in the environment wins.
     if settings.ui_scale != 1.0 and "QT_SCALE_FACTOR" not in os.environ:
         os.environ["QT_SCALE_FACTOR"] = str(settings.ui_scale)
@@ -172,3 +177,13 @@ def create_application() -> QApplication:
     app.styleHints().colorSchemeChanged.connect(_on_color_scheme_changed)
 
     return app
+
+
+def file_dialog_options(options: QFileDialog.Option | None = None) -> QFileDialog.Option:
+    # On Linux, Qt's "native" dialog is the desktop's dialog code (GTK, the xdg portal, or KDE's plugins) loaded into
+    # the pip-installed Qt, which freezes or crashes OneTrainer on some desktops. Qt's own dialog doesn't depend on it.
+    if options is None:
+        options = QFileDialog.Option(0)
+    if sys.platform.startswith("linux") and not _system_file_dialogs:
+        options |= QFileDialog.Option.DontUseNativeDialog
+    return options

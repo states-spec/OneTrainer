@@ -37,6 +37,13 @@ class BaseSettingsTabView:
         self.components.switch(frame, row, 1, ui_state, "start_maximized")
         row += 1
 
+        if controller.supports_system_file_dialogs:
+            self.components.label(frame, row, 0, "System File Dialogs",
+                                  tooltip="Use the desktop's file and folder dialogs (GTK, portal or KDE) for the \"...\" buttons instead of "
+                                          "OneTrainer's own. Off by default: on some Linux desktops the system dialog freezes or crashes OneTrainer.")
+            self.components.switch(frame, row, 1, ui_state, "system_file_dialogs")
+            row += 1
+
         self.components.button(frame, row, 1, "Reset to Defaults", lambda: controller.reset(ui_state),
                                tooltip="Restore the default UI settings (dark theme, 100% scale).")
         row += 1

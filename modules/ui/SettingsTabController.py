@@ -5,7 +5,7 @@ from modules.util.enum.UITheme import UITheme
 
 
 class SettingsTabController:
-    SETTING_NAMES = ("theme", "ui_scale", "font_size", "remember_window_size", "start_maximized")
+    SETTING_NAMES = ("theme", "ui_scale", "font_size", "remember_window_size", "start_maximized", "system_file_dialogs")
 
     def __init__(
             self,
@@ -13,11 +13,13 @@ class SettingsTabController:
             apply_settings: Callable[[UISettingsConfig], None],
             needs_restart: tuple[str, ...],
             supports_font_size: bool,
+            supports_system_file_dialogs: bool = False,
     ):
         self.settings = settings
         self.apply_settings = apply_settings
         self.needs_restart = needs_restart  # names of the settings the toolkit can only apply at startup
         self.supports_font_size = supports_font_size
+        self.supports_system_file_dialogs = supports_system_file_dialogs  # Qt on Linux: Qt's own or the desktop's dialog
 
     def get_themes(self) -> list[tuple[str, UITheme]]:
         return [

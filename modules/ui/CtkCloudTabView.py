@@ -27,7 +27,9 @@ class CtkCloudTabView(BaseCloudTabView):
 
 
     def _on_set_gpu_types(self):
-        self.gpu_types_menu.configure(values=self.controller.get_gpu_types())
+        gpu_types = self.controller.get_gpu_types()
+        if gpu_types:  # keep the list when the lookup failed
+            self.gpu_types_menu.configure(values=gpu_types)
 
     def _make_reattach_frame(self, frame):
         reattach_frame = ctk.CTkFrame(frame, fg_color="transparent")

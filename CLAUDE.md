@@ -19,7 +19,7 @@ OT_PLATFORM_REQUIREMENTS=requirements-rocm.txt ./install.sh   # skip GPU auto-de
 ./run-cmd.sh create_train_files --config-output-destination c.json \
     --concepts-output-destination concepts.json --samples-output-destination samples.json
 ./run-cmd.sh <script> -h         # any file in scripts/ (sample, convert_model, generate_masks, ...)
-./run-cmd.sh generate_debug_report
+./run-cmd.sh generate_debug_report   # includes a "PyTorch GPU Runtime" section (HIP/CUDA build, gfx arch, VRAM, bnb library, /opt/rocm version)
 ruff check .                     # lint config in pyproject.toml; E501 ignored, line-length 120
 pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, NOT ruff format)
 ```
@@ -71,7 +71,7 @@ modules/trainer/GenericTrainer.py
 2. `modules/util/create.py:create_optimizer`: add a `case`. The `match` has **no default**, so an unhandled enum gives `optimizer=None`.
 3. `modules/util/optimizer_util.py:OPTIMIZER_DEFAULT_PARAMETERS[Optimizer.X]` is **required**; `change_optimizer` raises KeyError when the optimizer is picked in the UI. Its keys decide which params the UI shows.
 4. A new hyperparameter needs: a `TrainOptimizerConfig` annotation plus a `default_values()` entry (`TrainConfig.py:35`/`:146`), a `KEY_DETAIL_MAP` entry in `modules/ui/BaseOptimizerParamsWindowView.py:33` (keys missing there are silently **hidden**), and use in `create.py`.
-5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform file, currently 0.49.2 everywhere (the first 0.49.x with a `rocm72` binary; its CUDA wheels ship cuda126 and cuda130 on Linux, cuda118–130 on Windows).
+5. Pin the package in `requirements-global.txt`, or in the platform files if it has GPU builds. If it is CUDA-only, say so. bitsandbytes is pinned per platform file, currently 0.49.2 everywhere (the first 0.49.x with a `rocm72` binary; its CUDA wheels ship cuda126 and cuda130 on Linux, cuda118–130 on Windows). 0.50 removed the `percentile_clipping`/`block_wise` constructor args that `create.py` passes to ADAM(W)_8BIT, ADAGRAD_8BIT, RMSPROP_8BIT, LARS_8BIT and LAMB(_8BIT) (TypeError), so an upgrade needs those removed first.
 
 ### New adapter (PEFT) type
 1. `PeftType` enum in `modules/util/enum/ModelType.py` (bottom of file).
@@ -135,6 +135,7 @@ modules/trainer/GenericTrainer.py
 - The ADV optimizers get `k_warmup_steps = learning_rate_warmup_steps / grad_accum` for Kourkoutas-β (`create.py:768,788,815`). With LR warmup at 0, that warmup is 0 too.
 - `ADAM_8BIT`/`ADAMW_8BIT` use `bnb.optim.Adam8bit`/`AdamW8bit` (always 8-bit state; tensors < `min_8bit_size` stay fp32; `amsgrad` unsupported). bnb picks the update kernel from the stored state dtype, so old 32-bit state from a backup keeps working. Other bnb optimizers still show UI params that `create.py` never passes (e.g. `optim_bits`/`min_8bit_size`/`percentile_clipping` for ADAGRAD, RMSPROP, LARS; `block_wise` etc. for SGD_8BIT); their displayed defaults match the actual behavior.
 - bitsandbytes backs every `*_8BIT` optimizer plus ADAGRAD, RMSPROP, LARS, LAMB and AdEMAMix (even 32-bit), and the `INT_8`/`NFLOAT_4` weight dtypes. `*_COMPRESSED` dtypes need nvCOMP (NVIDIA only) and raise otherwise.
+- The float W8A8 dtypes (`FLOAT_W8A8`, its compressed variant, `GGUF_A8_FLOAT`) run `torch._scaled_mm`, which PyTorch allows only on fp8 hardware (NVIDIA sm89+, AMD gfx942/gfx950/gfx1200/gfx1201). `GenericTrainer.start` probes it (`torch_util.fp8_matmul_supported`) and stops before loading; it used to fail at the first forward, after caching. On gfx1100 (RDNA3), int8 goes to native WMMA (hipBLASLt ships navi31 I8II kernels for `_int_mm`; Triton emits `v_wmma_i32_16x16x16_iu8`) and fp8 only as an fp16 upcast, and RDNA3 runs int8 WMMA at the bf16 rate: W8A8 saves memory but is not faster there, same as `FLOAT_8` (W8, weight-only). The W8A8 backward is a Triton kernel, so W8A8 can't train on the CPU.
 - A layer-offloaded part in FINE_TUNE requires an optimizer with `supports_fused_back_pass()` **and** `fused_back_pass=true` (`create.py:225`).
 
 **adv_optm (the `*_ADV` optimizers, pinned 2.5.13)**
@@ -160,7 +161,8 @@ modules/trainer/GenericTrainer.py
 - `dataloader_threads > 1` together with a text-encoder `offload_fraction > 0` raises an error.
 - Aspect batch sorting never mixes buckets and skips each bucket's leftover samples, so a small dataset can give an epoch with no batches. `GenericTrainer.train` then raises instead of counting through empty epochs (which would end without saving).
 - Caching runs the encoders (VAE, text encoders) in `dataloader_threads` concurrent threads (mgds `PipelineState` executor), so with the default 2, two samples are prepared at once. A `CheckFinite` module (`dataLoader/pipelineModules/`) in front of each disk cache stops caching with the file name when an encoding has NaN/inf. Seen on ROCm (gfx1100, torch 2.13+rocm7.2): a random image's latent came out all NaN, and the same image encoded fine on a rerun. The pipeline modules that hold a model now take one shared lock (`DataLoaderMgdsMixin._run_models_one_at_a_time`), so encodes run one at a time while loading/cropping stays parallel; the cache is bit-identical to `dataloader_threads: 1`.
-- The NaN-loss check runs **before** `optimizer.step()` (`GenericTrainer.train`), so a NaN batch never reaches the weights or optimizer state; with a fused back pass the update already happened during backward.
+- The NaN-loss check runs **before** `optimizer.step()` (`GenericTrainer.train`), so a NaN batch never reaches the weights or optimizer state; with a fused back pass the update already happened during backward. It also stops on an infinite loss (which broke the weights the same way), except with an enabled fp16 grad scaler, which skips such steps itself. `CustomGradScaler` is built for device `cuda`, so it is disabled (but not `None`) on a CPU run.
+- Validation (`GenericTrainer.__validate`) runs like sampling: model in eval mode (no LoRA/T5 dropout), schedule-free optimizers switched to their averaged weights (`__before_eval`), then `setup_train_device` and `optimizer.train()` restore training. It measures the raw weights, not EMA.
 
 **Layer / activation offloading** (`modules/util/LayerOffloadConductor.py`)
 - Async transfers use three streams (train = default, layer, activations) and are on whenever `train_device` is `cuda` (ROCm too) and `async_offloading` is on. Temp-side caches are pinned with `cudaHostRegister`/`hipHostRegister` only in async mode; `async_offloading: false` = synchronous copies, no pinned memory.
@@ -187,7 +189,8 @@ modules/trainer/GenericTrainer.py
 - ROCm bitsandbytes (`libbitsandbytes_rocm72.so`) links hipBLAS/hipSPARSE/hipBLASLt from `/opt/rocm/lib` (a system ROCm 7.2 install) and runs `rocminfo`; without them, import logs a load error and only bnb features fail. bnb picks `libbitsandbytes_rocm<major><minor>` from `torch.version.hip`, so it must match the torch ROCm build.
 
 **Attention**
-- `attention_mechanism`: `SDP` = diffusers "native" (torch SDPA picks its own kernel); `FLASH` = diffusers "flash" (the flash-attn package, **CUDA-oriented**); `CUDNN` = **CUDA-only**; `FLEX` = torch FlexAttention. Chroma always passes a text attention mask when captions are padded (`BaseChromaSetup.predict`).
+- `attention_mechanism`: `SDP` = diffusers "native" (torch SDPA picks its own kernel); `FLASH` = diffusers "flash" (the flash-attn package, **CUDA-oriented**); `CUDNN` = **CUDA-only** (not built into ROCm PyTorch; `GenericTrainer.start` stops on it under ROCm); `FLEX` = torch FlexAttention. Chroma always passes a text attention mask when captions are padded (`BaseChromaSetup.predict`); `ChromaModel.encode_text` cuts the text to the batch's longest unmasked length, rounded up to a multiple of 16 when a mask is needed.
+- ROCm SDPA (torch 2.13 = AOTriton 0.12b): flash and memory-efficient attention are on by default for gfx1100/gfx942/gfx950/gfx1151/gfx1201; gfx1101-1103, gfx1150/1152/1153 and gfx1200 are "experimental" and need `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, else SDPA silently uses the math kernel. On ROCm only, a float mask whose dtype differs from q/k/v also drops to math (a warning, then slow and memory-hungry); today every model passes a bool mask or one in the train dtype.
 
 ## Working rules for Claude
 - Don't change default config values, optimizer defaults, loss/noise/timestep math, or training-loop order without asking first.

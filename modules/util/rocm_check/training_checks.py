@@ -8,6 +8,7 @@ import os
 import threading
 import time
 
+from modules.util import rocm_sdpa_fix
 from modules.util.rocm_check.framework import Ctx, Rec, check, finite, rel_err
 
 import torch
@@ -397,7 +398,7 @@ def vae_layers(ctx: Ctx, rec: Rec):
     img_d = img.to(ctx.device)
     miopen_default = torch.backends.cudnn.enabled
 
-    def run(label: str, thread: bool, miopen: bool = True, math_attention: bool = False):
+    def run(label: str, thread: bool, miopen: bool = True, math_attention: bool = False, sdpa_fix: bool = True):
         out = {}
 
         def body():
@@ -411,6 +412,9 @@ def vae_layers(ctx: Ctx, rec: Rec):
                 out["e"] = f"{type(e).__name__}: {e}"
 
         torch.backends.cudnn.enabled = miopen
+        fix_was_installed = rocm_sdpa_fix.installed()
+        if not sdpa_fix:
+            rocm_sdpa_fix.uninstall()
         try:
             if thread:
                 t = threading.Thread(target=body)
@@ -420,6 +424,8 @@ def vae_layers(ctx: Ctx, rec: Rec):
                 body()
         finally:
             torch.backends.cudnn.enabled = miopen_default
+            if fix_was_installed:
+                rocm_sdpa_fix.install()
         if "e" in out:
             rec.fail(f"{label}: {out['e']}")
             return None
@@ -431,7 +437,8 @@ def vae_layers(ctx: Ctx, rec: Rec):
             return True
         name, kind, err, is_finite = bad[0] if bad else ("(none)", "", final, True)
         types = sorted({r[1] for r in bad})
-        rec.fail(f"{label}: latent rel err {final:.2e}; first wrong layer {name} ({kind}): "
+        report = rec.warn if not sdpa_fix and rocm_sdpa_fix.applies_to(ctx.device) else rec.fail
+        report(f"{label}: latent rel err {final:.2e}; first wrong layer {name} ({kind}): "
                  f"{'NaN/inf' if not is_finite else f'rel err {err:.2e}'}; wrong layer types: {', '.join(types)}")
         return False
 
@@ -446,6 +453,9 @@ def vae_layers(ctx: Ctx, rec: Rec):
                                           miopen=False)
         results["worker math attention"] = run("worker thread, SDPA math kernel", True, math_attention=True)
         results["main no MIOpen"] = run("main thread, MIOpen off", False, miopen=False)
+        if rocm_sdpa_fix.applies_to(ctx.device):
+            run("main thread, without OneTrainer's attention fix (rocm_sdpa_fix; expected wrong here)", False,
+                sdpa_fix=False)
     fixes = [k for k, v in results.items() if v and not results.get(k.split(" no ")[0].split(" math")[0], True)]
     if fixes:
         rec.line("the runs that match where the plain run doesn't: " + ", ".join(fixes))

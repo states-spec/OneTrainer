@@ -6,6 +6,7 @@ norm of the reference) and leave room for the output dtype's rounding.
 """
 import math
 
+from modules.util import rocm_sdpa_fix
 from modules.util.rocm_check.framework import Ctx, Rec, check, finite, rel_err
 from modules.util.rocm_check.shapes import FAMILIES, HEAD_DIMS
 
@@ -219,6 +220,9 @@ def sdpa_choice(ctx: Ctx, rec: Rec):
 @check(SECTION, "SDPA forward+backward per backend, head size and mask")
 def sdpa_correctness(ctx: Ctx, rec: Rec):
     b, h, seq = 2, 3, 257  # odd length: exercises the kernels' tail handling
+    fix_applies = rocm_sdpa_fix.applies_to(ctx.device) and rocm_sdpa_fix.installed()
+    if fix_applies:
+        rec.line(f"this GPU gets rocm_sdpa_fix: head sizes above {rocm_sdpa_fix.MAX_HEAD_DIM} run on the math kernel")
     backends = [None, SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
     # fp32 is what the VAEs run their attention in, as one head of 512 (the extra head sizes run without masks)
     dtypes = [torch.bfloat16, torch.float16, torch.float32] if ctx.full else [torch.bfloat16, torch.float32]
@@ -235,7 +239,9 @@ def sdpa_correctness(ctx: Ctx, rec: Rec):
                     else mask.any(dim=-1, keepdim=True)
                 results = []
                 for backend in backends:
-                    bname = "default" if backend is None else backend.name.replace("_ATTENTION", "")
+                    # "OneTrainer" is the call training makes (with rocm_sdpa_fix); the forced backends are PyTorch's
+                    # own kernels, called unpatched
+                    bname = "OneTrainer" if backend is None else backend.name.replace("_ATTENTION", "")
                     qd, kd, vd = (t.to(ctx.device, copy=True).requires_grad_() for t in (q, k, v))
                     md = None if mask is None else mask.to(ctx.device)
                     try:
@@ -243,7 +249,7 @@ def sdpa_correctness(ctx: Ctx, rec: Rec):
                             out = F.scaled_dot_product_attention(qd, kd, vd, attn_mask=md)
                         else:
                             with sdpa_kernel([backend]):
-                                out = F.scaled_dot_product_attention(qd, kd, vd, attn_mask=md)
+                                out = rocm_sdpa_fix.original_scaled_dot_product_attention(qd, kd, vd, attn_mask=md)
                         out.backward(g.to(ctx.device))
                     except RuntimeError as e:
                         if any(s in str(e) for s in ("No available kernel", "No viable backend")) \
@@ -257,16 +263,21 @@ def sdpa_correctness(ctx: Ctx, rec: Rec):
                     all_finite = finite(out) and all(finite(x.grad) for x in (qd, kd, vd))
                     label = f"hd {d} {DTYPE_NAME[dtype]} {mask_name} {bname}"
                     tol = TOL[dtype] * 2
+                    report = rec.fail
+                    if backend is not None and d > rocm_sdpa_fix.MAX_HEAD_DIM and fix_applies:
+                        # the known AOTriton bug that rocm_sdpa_fix routes around: shown, not failed
+                        report = lambda msg: rec.warn(msg + " (PyTorch bug; OneTrainer uses the math kernel here)")  # noqa: E731
                     if not math.isfinite(err_out) or not math.isfinite(err_grad):
-                        rec.fail(f"{label}: the comparison itself is not finite ({err_out}, {err_grad})")
+                        report(f"{label}: the comparison itself is not finite ({err_out}, {err_grad})")
                     elif not all_finite:
-                        rec.fail(f"{label}: NaN/inf in the output or gradients"
-                                 f"{' (fully masked query rows)' if 'outer' in mask_name else ''}")
+                        report(f"{label}: NaN/inf in the output or gradients"
+                               f"{' (fully masked query rows)' if 'outer' in mask_name else ''}")
                     elif err_out > tol or err_grad > tol * 2.5:
-                        rec.fail(f"{label}: rel err out {err_out:.2e}, grads {err_grad:.2e}")
+                        report(f"{label}: rel err out {err_out:.2e}, grads {err_grad:.2e}")
                     results.append(f"{bname} {err_out:.1e}/{err_grad:.1e}")
                 rec.line(f"hd {d} {DTYPE_NAME[dtype]} {mask_name}: " + ", ".join(results))
-    rec.line("(numbers: rel err of output / worst gradient; n/a = the backend doesn't take this input)")
+    rec.line("(numbers: rel err of output / worst gradient; n/a = the backend doesn't take this input; OneTrainer = "
+             "the call training makes, the others are PyTorch's kernels forced one at a time)")
 
 
 @check(SECTION, "convolution, group norm, upsample forward+backward (VAE ops)")

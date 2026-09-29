@@ -26,8 +26,8 @@ results up to the check that was running (the report names it). The exit code is
 2. **Kernel correctness**, each against a float64 reference on the CPU:
    - matmul/linear forward and backward in fp32/bf16/fp16 (hipBLASLt or cuBLAS)
    - int8 matmul (`torch._int_mm`) and OneTrainer's Triton 8-bit kernel (the W8A8 backward), W8A8 layers
-   - scaled dot product attention per backend (flash, memory-efficient, math, and the one PyTorch picks), per head
-     size used by the model families, with no mask, key-padding masks and the query x key mask whose padded rows
+   - scaled dot product attention per backend (flash, memory-efficient and math, PyTorch's kernels called directly)
+     and the call OneTrainer makes, per head size used by the model families and the VAEs (up to 512), with no mask, key-padding masks and the query x key mask whose padded rows
      have no valid key (NaN there would spread through the model)
    - which attention backend PyTorch picks per head size, dtype and mask, and per model family
    - convolution, group norm and upsampling (the VAE's ops, MIOpen on ROCm)

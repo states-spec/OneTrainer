@@ -48,7 +48,8 @@ results up to the check that was running (the report names it). The exit code is
      and which switch avoids it
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
    runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
-   TunableOp, MIOpen's find mode, the allocator with `expandable_segments`, and `torch.compile`.
+   TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
+   and, with `--full`, offloading checks run again under each allocator), and `torch.compile`.
 
 ## Reading the results
 

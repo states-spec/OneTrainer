@@ -36,7 +36,7 @@ def attention_speed(ctx: Ctx, rec: Rec):
             s = family.seq(res)
             q, k, v = (_rand(ctx, 1, family.heads, s, family.head_dim, seed=i).requires_grad_() for i in range(3))
             flops = 4 * family.heads * s * s * family.head_dim * 3.5  # fwd (2 matmuls) + bwd (~2.5x)
-            parts = []
+            parts, times = [], {}
             for backend in backends:
                 name = "default" if backend is None else backend.name.replace("_ATTENTION", "").lower()
                 if backend == SDPBackend.MATH and s > 4608:
@@ -54,19 +54,24 @@ def attention_speed(ctx: Ctx, rec: Rec):
 
                 try:
                     ms = ctx.bench(run, iters=10 if ctx.full else 4, warmup=2)
+                except torch.OutOfMemoryError:  # a RuntimeError subclass: must come first
+                    parts.append(f"{name} OOM")
+                    torch.cuda.empty_cache()
+                    continue
                 except RuntimeError as e:
                     if any(s in str(e) for s in ("No available kernel", "No viable backend")):
                         parts.append(f"{name} n/a")
                         continue
                     raise
-                except torch.OutOfMemoryError:
-                    parts.append(f"{name} OOM")
-                    torch.cuda.empty_cache()
-                    continue
                 peak = (torch.cuda.max_memory_allocated(ctx.device) - before) / 2**20
                 parts.append(f"{name} {ms:.2f} ms ({_tflops(flops, ms):.0f} TFLOPS, +{peak:.0f} MiB)")
                 rec.metric(f"{family.name} @{res} {name} ms", ms)
+                times[name] = ms
             rec.line(f"{family.name} @ {res}px (1x{family.heads}x{s}x{family.head_dim} bf16): " + "; ".join(parts))
+            fused = [times[n] for n in ("flash", "efficient") if n in times]
+            if "default" in times and fused and times["default"] > 2 * min(fused):
+                rec.warn(f"{family.name} @ {res}px: the default kernel is {times['default'] / min(fused):.1f}x slower "
+                         f"than the fastest fused one, so training would run the slow path here")
             del q, k, v
 
 
@@ -196,54 +201,36 @@ def _without_expandable(conf: str) -> str:
     return ",".join(part for part in conf.split(",") if part and not part.strip().startswith("expandable_segments"))
 
 
-def _conv_ops(x, w, gn_w):
-    # the VAE ops of kernel_checks.conv_ops
-    return F.conv2d(F.interpolate(F.silu(F.group_norm(x, 32, gn_w)), scale_factor=2.0, mode="nearest"), w, padding=1)
+# the checks that gave wrong results with expandable_segments on the RX 7900 XTX (and passed without it)
+_ALLOCATOR_CHECKS = ["convolution, group norm, upsample", "VAE encode per layer", "concurrent VAE encodes"]
+_ALLOCATOR_CHECKS_FULL = ["layer + activation offloading"]
 
 
-@child_task("alloc_correctness")
-def alloc_correctness(ctx: Ctx) -> dict:
-    """whether results stay right while the allocator grows, maps and reuses memory: known data in tensors that live
-    through the churn, and bf16 VAE ops forward+backward (against a float64 CPU reference) between churn rounds"""
-    g = torch.Generator().manual_seed(ctx.seed)
-    x = torch.randn(2, 128, 64, 64, generator=g).bfloat16()
-    w = (torch.randn(256, 128, 3, 3, generator=g) * (128 * 9) ** -0.5).bfloat16()
-    gn_w = torch.randn(128, generator=g).bfloat16()
-    xr, wr, gr = (t.double().requires_grad_() for t in (x, w, gn_w))
-    out_r = _conv_ops(xr, wr, gr)
-    grad_out = torch.randn(out_r.shape, generator=g).bfloat16()
-    out_r.backward(grad_out.double())
-    refs = (out_r.detach(), xr.grad, wr.grad, gr.grad)
+@child_task("alloc_checks")
+def alloc_checks(ctx: Ctx) -> dict:
+    """the correctness checks that broke under expandable_segments, run in this process's allocator setting after an
+    allocation churn (a synthetic conv test alone passed under it while these failed)"""
+    from modules.util.rocm_check.framework import REGISTRY, Rec
 
-    free, _ = torch.cuda.mem_get_info(ctx.device)
-    pattern = (torch.arange(64 * 2**20, dtype=torch.int64) % 251).to(torch.uint8)  # 64 MiB of known bytes
-    held = [pattern.to(ctx.device) for _ in range(4)]
-    bad_ops, bad_data, worst, rounds = 0, 0, 0.0, 8
-    kept = []
-    for round_ in range(rounds):
-        for fraction in (0.04, 0.008, 0.08, 0.004, 0.06, 0.02, 0.12, 0.003):
-            kept.append(torch.full((int(free * fraction * (1 + 0.05 * round_)) // 2,), round_ + 1.0,
-                                   dtype=torch.bfloat16, device=ctx.device))
-            if len(kept) > 4:
-                kept.pop(0)
-        xd, wd, gd = (t.to(ctx.device, copy=True).requires_grad_() for t in (x, w, gn_w))
-        out = _conv_ops(xd, wd, gd)
-        out.backward(grad_out.to(ctx.device))
-        errs = [rel_err(a, b) for a, b in zip((out, xd.grad, wd.grad, gd.grad), refs, strict=True)]
-        err = max(errs) if all(e == e for e in errs) else float("inf")
-        worst = max(worst, err)
-        bad_ops += err > 4e-2 or not finite(out)
-        bad_data += sum(not torch.equal(t.cpu(), pattern) for t in held)
-        bad_data += sum(int(not bool((t == t[0]).all())) for t in kept[-2:])  # a freshly filled block reads back
-        held.append(held.pop(0).clone())  # move one held buffer each round, so held data lands in reused memory
-        del xd, wd, gd, out
-    torch.cuda.synchronize(ctx.device)
-    return {"rounds": rounds, "bad ops": bad_ops, "bad data": bad_data, "worst ops rel err": worst,
-            "alloc conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")}
+    alloc_pattern(ctx)
+    torch.cuda.empty_cache()
+    wanted = _ALLOCATOR_CHECKS + (_ALLOCATOR_CHECKS_FULL if ctx.full else [])
+    results = {}
+    for c in REGISTRY:
+        if not any(c.name.startswith(w) for w in wanted):
+            continue
+        rec = Rec()
+        try:
+            c.fn(ctx, rec)
+        except Exception as e:
+            rec.fail(f"{type(e).__name__}: {e}")
+        failures = [line for line in rec.lines if line.startswith("FAIL")]
+        results[c.name] = {"status": rec.status, "failures": failures}
+    return {"checks": results, "alloc conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")}
 
 
 @check(SECTION, "allocator: default vs expandable_segments (OT_EXPANDABLE_SEGMENTS), memory and correctness",
-       gpu_only=True)
+       gpu_only=True, note="runs the VAE, conv and (with --full) offloading checks again under each allocator")
 def allocator(ctx: Ctx, rec: Rec):
     rec.info()
     default = _without_expandable(os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
@@ -260,14 +247,15 @@ def allocator(ctx: Ctx, rec: Rec):
             rec.line(f"{name} ({conf or 'no settings'}): peak {result['peak allocated GiB']:.2f} GiB in tensors, "
                      f"{result['peak reserved GiB']:.2f} GiB reserved ({waste:.2f} GiB held unused)")
             rec.metric(f"{name} reserved-unused GiB", waste)
-        result = run_child(ctx, "alloc_correctness", env)
+        result = run_child(ctx, "alloc_checks", env, timeout=1800.0)
         if "error" in result:
             rec.fail(f"{name} correctness run: {result['error']}")
             continue
-        wrong[name] = result["bad ops"] + result["bad data"]
-        rec.expect(wrong[name] == 0,
-                   f"{name}: {result['bad ops']} of {result['rounds']} VAE-op rounds wrong (worst rel err "
-                   f"{result['worst ops rel err']:.1e}), {result['bad data']} kept buffers changed during the churn")
+        wrong[name] = 0
+        for check_name, r in result["checks"].items():
+            wrong[name] += len(r["failures"])
+            rec.expect(not r["failures"], f"{name}: {check_name}: {r['status']}"
+                       + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else ""))
     if wrong.get("expandable_segments") and wrong.get("default") == 0:
         rec.fail("expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
                  "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)")

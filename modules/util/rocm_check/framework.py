@@ -263,6 +263,29 @@ def _fmt(v) -> str:
     return str(v)
 
 
+def _global_state() -> dict:
+    # process-wide switches a check may flip for a test; a leftover change would skew every later check (and a
+    # leak of the same kind in OneTrainer's code would slow or break training)
+    from modules.util import rocm_sdpa_fix
+    return {"flash SDPA": torch.backends.cuda.flash_sdp_enabled(),
+            "memory-efficient SDPA": torch.backends.cuda.mem_efficient_sdp_enabled(),
+            "math SDPA": torch.backends.cuda.math_sdp_enabled(),
+            "MIOpen/cuDNN": torch.backends.cudnn.enabled,
+            "rocm_sdpa_fix installed": rocm_sdpa_fix.installed()}
+
+
+def _restore_global_state(state: dict):
+    from modules.util import rocm_sdpa_fix
+    torch.backends.cuda.enable_flash_sdp(state["flash SDPA"])
+    torch.backends.cuda.enable_mem_efficient_sdp(state["memory-efficient SDPA"])
+    torch.backends.cuda.enable_math_sdp(state["math SDPA"])
+    torch.backends.cudnn.enabled = state["MIOpen/cuDNN"]
+    if state["rocm_sdpa_fix installed"]:
+        rocm_sdpa_fix.install()
+    else:
+        rocm_sdpa_fix.uninstall()
+
+
 def run_checks(ctx: Ctx, report: Report, only: list[str] | None, skip: list[str] | None):
     def selected(c: Check) -> bool:
         key = f"{c.section} / {c.name}".lower()
@@ -285,6 +308,7 @@ def run_checks(ctx: Ctx, report: Report, only: list[str] | None, skip: list[str]
         else:
             report.running = label
             report.write()
+            state = _global_state()
             faulthandler.dump_traceback_later(c.timeout * (3 if ctx.full else 1), exit=False)
             try:
                 c.fn(ctx, rec)
@@ -295,6 +319,11 @@ def run_checks(ctx: Ctx, report: Report, only: list[str] | None, skip: list[str]
                 rec.lines += ["  " + line for line in traceback.format_exc().strip().splitlines()[-8:]]
             finally:
                 faulthandler.cancel_dump_traceback_later()
+            changed = {k: v for k, v in _global_state().items() if state[k] != v}
+            if changed:
+                rec.fail("left process-wide settings changed (restored for the next checks): "
+                         + ", ".join(f"{k} {state[k]} -> {v}" for k, v in changed.items()))
+                _restore_global_state(state)
             try:
                 ctx.sync()
                 if ctx.is_gpu:

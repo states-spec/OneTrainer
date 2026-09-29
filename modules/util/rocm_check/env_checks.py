@@ -93,6 +93,11 @@ def environment(ctx: Ctx, rec: Rec):
         rec.line(f"system ROCm (/opt/rocm): {rocm_version.read_text().strip()}")
     env = [f"{name}={os.environ[name]}" for name in ENV_VARS if name in os.environ]
     rec.line("environment: " + (", ".join(env) if env else "none of the GPU variables are set"))
+    alloc_conf = next((os.environ[n] for n in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+                        if os.environ.get(n)), "")
+    if ctx.is_rocm and "expandable_segments:true" in alloc_conf.replace(" ", "").lower():
+        rec.warn("expandable_segments is on, so every check in this run uses it; compare with a run without it "
+                 "(the allocator check does both)")
 
 
 @check(SECTION, "fp8 matmul support (float W8A8 weight types)")

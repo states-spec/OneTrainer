@@ -192,20 +192,88 @@ def alloc_pattern(ctx: Ctx) -> dict:
             "alloc conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")}
 
 
-@check(SECTION, "allocator: default vs expandable_segments (OT_EXPANDABLE_SEGMENTS)", gpu_only=True)
+def _without_expandable(conf: str) -> str:
+    return ",".join(part for part in conf.split(",") if part and not part.strip().startswith("expandable_segments"))
+
+
+def _conv_ops(x, w, gn_w):
+    # the VAE ops of kernel_checks.conv_ops
+    return F.conv2d(F.interpolate(F.silu(F.group_norm(x, 32, gn_w)), scale_factor=2.0, mode="nearest"), w, padding=1)
+
+
+@child_task("alloc_correctness")
+def alloc_correctness(ctx: Ctx) -> dict:
+    """whether results stay right while the allocator grows, maps and reuses memory: known data in tensors that live
+    through the churn, and bf16 VAE ops forward+backward (against a float64 CPU reference) between churn rounds"""
+    g = torch.Generator().manual_seed(ctx.seed)
+    x = torch.randn(2, 128, 64, 64, generator=g).bfloat16()
+    w = (torch.randn(256, 128, 3, 3, generator=g) * (128 * 9) ** -0.5).bfloat16()
+    gn_w = torch.randn(128, generator=g).bfloat16()
+    xr, wr, gr = (t.double().requires_grad_() for t in (x, w, gn_w))
+    out_r = _conv_ops(xr, wr, gr)
+    grad_out = torch.randn(out_r.shape, generator=g).bfloat16()
+    out_r.backward(grad_out.double())
+    refs = (out_r.detach(), xr.grad, wr.grad, gr.grad)
+
+    free, _ = torch.cuda.mem_get_info(ctx.device)
+    pattern = (torch.arange(64 * 2**20, dtype=torch.int64) % 251).to(torch.uint8)  # 64 MiB of known bytes
+    held = [pattern.to(ctx.device) for _ in range(4)]
+    bad_ops, bad_data, worst, rounds = 0, 0, 0.0, 8
+    kept = []
+    for round_ in range(rounds):
+        for fraction in (0.04, 0.008, 0.08, 0.004, 0.06, 0.02, 0.12, 0.003):
+            kept.append(torch.full((int(free * fraction * (1 + 0.05 * round_)) // 2,), round_ + 1.0,
+                                   dtype=torch.bfloat16, device=ctx.device))
+            if len(kept) > 4:
+                kept.pop(0)
+        xd, wd, gd = (t.to(ctx.device, copy=True).requires_grad_() for t in (x, w, gn_w))
+        out = _conv_ops(xd, wd, gd)
+        out.backward(grad_out.to(ctx.device))
+        errs = [rel_err(a, b) for a, b in zip((out, xd.grad, wd.grad, gd.grad), refs, strict=True)]
+        err = max(errs) if all(e == e for e in errs) else float("inf")
+        worst = max(worst, err)
+        bad_ops += err > 4e-2 or not finite(out)
+        bad_data += sum(not torch.equal(t.cpu(), pattern) for t in held)
+        bad_data += sum(int(not bool((t == t[0]).all())) for t in kept[-2:])  # a freshly filled block reads back
+        held.append(held.pop(0).clone())  # move one held buffer each round, so held data lands in reused memory
+        del xd, wd, gd, out
+    torch.cuda.synchronize(ctx.device)
+    return {"rounds": rounds, "bad ops": bad_ops, "bad data": bad_data, "worst ops rel err": worst,
+            "alloc conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")}
+
+
+@check(SECTION, "allocator: default vs expandable_segments (OT_EXPANDABLE_SEGMENTS), memory and correctness",
+       gpu_only=True)
 def allocator(ctx: Ctx, rec: Rec):
     rec.info()
-    existing = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    expandable = ",".join(filter(None, [existing, "expandable_segments:True"]))
-    for name, conf in (("default", existing), ("expandable_segments", expandable)):
-        result = run_child(ctx, "alloc_pattern", {"PYTORCH_CUDA_ALLOC_CONF": conf})
+    default = _without_expandable(os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
+    expandable = ",".join(filter(None, [default, "expandable_segments:True"]))
+    wrong = {}
+    for name, conf in (("default", default), ("expandable_segments", expandable)):
+        # an empty value makes PyTorch fall back to PYTORCH_HIP_ALLOC_CONF/PYTORCH_ALLOC_CONF; clear those too
+        env = {"PYTORCH_CUDA_ALLOC_CONF": conf, "PYTORCH_HIP_ALLOC_CONF": conf, "PYTORCH_ALLOC_CONF": conf}
+        result = run_child(ctx, "alloc_pattern", env)
         if "error" in result:
             (rec.fail if name == "default" else rec.warn)(f"{name}: {result['error']}")
+        else:
+            waste = result["peak reserved GiB"] - result["peak allocated GiB"]
+            rec.line(f"{name} ({conf or 'no settings'}): peak {result['peak allocated GiB']:.2f} GiB in tensors, "
+                     f"{result['peak reserved GiB']:.2f} GiB reserved ({waste:.2f} GiB held unused)")
+            rec.metric(f"{name} reserved-unused GiB", waste)
+        result = run_child(ctx, "alloc_correctness", env)
+        if "error" in result:
+            rec.fail(f"{name} correctness run: {result['error']}")
             continue
-        waste = result["peak reserved GiB"] - result["peak allocated GiB"]
-        rec.line(f"{name} ({conf or 'no settings'}): peak {result['peak allocated GiB']:.2f} GiB in tensors, "
-                 f"{result['peak reserved GiB']:.2f} GiB reserved ({waste:.2f} GiB held unused)")
-        rec.metric(f"{name} reserved-unused GiB", waste)
+        wrong[name] = result["bad ops"] + result["bad data"]
+        rec.expect(wrong[name] == 0,
+                   f"{name}: {result['bad ops']} of {result['rounds']} VAE-op rounds wrong (worst rel err "
+                   f"{result['worst ops rel err']:.1e}), {result['bad data']} kept buffers changed during the churn")
+    if wrong.get("expandable_segments") and wrong.get("default") == 0:
+        rec.fail("expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
+                 "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)")
+    elif wrong.get("default"):
+        rec.fail("wrong results even with the default allocator: a driver, firmware or hardware (VRAM clock, "
+                 "undervolt, temperature) problem, not an allocator setting")
 
 
 class _DiTBlock(nn.Module):

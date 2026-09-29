@@ -20,10 +20,12 @@ OT_PLATFORM_REQUIREMENTS=requirements-rocm.txt ./install.sh   # skip GPU auto-de
     --concepts-output-destination concepts.json --samples-output-destination samples.json
 ./run-cmd.sh <script> -h         # any file in scripts/ (sample, convert_model, generate_masks, ...)
 ./run-cmd.sh generate_debug_report   # includes a "PyTorch GPU Runtime" section (HIP/CUDA build, gfx arch, VRAM, bnb library, /opt/rocm version)
+./run-cmd.sh rocm_check [--full]    # GPU check suite (docs/GpuCheck.md): kernel correctness, training code, speed per model family
 ruff check .                     # lint config in pyproject.toml; E501 ignored, line-length 120
 pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, NOT ruff format)
 ```
 - **No test suite.** No GitHub Actions workflows; only pre-commit.ci. Validate changes with `ruff check` plus a short real run (e.g. `--config-value epochs=1`).
+- `scripts/rocm_check.py` (logic in `modules/util/rocm_check/`) is the only GPU-side check: the user runs it on the 7900 XTX and hands back `rocm_check_report.txt`/`.json`. Model shapes live in `shapes.py` (one row per family, not per model), so a new model type with new head/hidden sizes adds a row there. On the CPU, GPU-only checks skip; everything else runs (offloading uses `cpu:1` as the temp device).
 - UI checks without a display: build `PySide6TrainView` with `QT_QPA_PLATFORM=offscreen` (needs `libEGL.so.1`, `libxkbcommon`, `libfontconfig`) and use `widget.grab().save(...)`. Before `findChildren`, flush `deleteLater()`d widgets with `QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)`, because `processEvents()` leaves them in place. The CTk UI needs a Python with tkinter plus Xvfb.
 - `--config-value KEY=VALUE`: dotted keys walk nested `BaseConfig`s (`optimizer.beta1=0.9`); `None`/`null` clears a nullable field. `ema` is an `EMAMode` enum; the decay field is `ema_decay`.
 - `--preset-path` turns off migration for **both** files, so the config must already be in the current format (`__version` 12).

@@ -404,6 +404,9 @@ class GenericTrainer(BaseTrainer):
 
             self.callbacks.on_update_status("Calculating validation loss")
             self.model_setup.setup_train_device(self.model, self.config)
+            # the weights that are sampled and saved: schedule-free optimizers train on an interpolated point and
+            # switch to their averaged weights for evaluation
+            self.__before_eval()
 
             torch_gc()
 
@@ -449,6 +452,10 @@ class GenericTrainer(BaseTrainer):
 
                 accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
                 concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
+
+            if self.config.optimizer.optimizer.is_schedule_free:
+                torch.clear_autocast_cache()
+                self.model.optimizer.train()
 
             for concept_seed, total_loss in accumulated_loss_per_concept.items():
                 average_loss = total_loss / concept_counts[concept_seed]

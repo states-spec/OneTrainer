@@ -15,7 +15,6 @@ import functools
 
 import torch
 import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 original_scaled_dot_product_attention = F.scaled_dot_product_attention
 
@@ -40,23 +39,32 @@ def _needs_math(query: torch.Tensor) -> bool:
     return query.shape[-1] > MAX_HEAD_DIM and applies_to(query.device)
 
 
+def _math(query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa):
+    # PyTorch's math kernel called directly. torch.nn.attention.sdpa_kernel would select it through process-global
+    # backend flags, and two threads overlapping in it (caching runs the VAE in worker threads) left flash and
+    # memory-efficient attention switched off for the rest of the process.
+    return torch.ops.aten._scaled_dot_product_attention_math(
+        query, key, value, attn_mask, dropout_p, is_causal, scale=scale, enable_gqa=enable_gqa)[0]
+
+
 def math_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False):
     """PyTorch's math attention kernel, split along the query length when the score matrix would be large"""
-    with sdpa_kernel([SDPBackend.MATH]):
-        rows = query.shape[-2]
-        batch_heads = query[..., 0, 0].numel()
-        chunk = max(1, _CHUNK_BYTES // max(1, batch_heads * key.shape[-2] * 4 * 3))  # fp32 scores, probs, grads
-        if chunk >= rows or is_causal or dropout_p > 0.0:
-            return original_scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
-                                                         is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
-        outputs = []
-        for start in range(0, rows, chunk):
-            mask = attn_mask
-            if mask is not None and mask.dim() >= 2 and mask.shape[-2] != 1:
-                mask = mask[..., start:start + chunk, :]
-            outputs.append(original_scaled_dot_product_attention(
-                query[..., start:start + chunk, :], key, value, attn_mask=mask, scale=scale, enable_gqa=enable_gqa))
-        return torch.cat(outputs, dim=-2)
+    if attn_mask is not None and attn_mask.dtype == torch.bool:
+        # what scaled_dot_product_attention does before it runs the math kernel
+        attn_mask = torch.zeros(attn_mask.shape, dtype=query.dtype, device=attn_mask.device) \
+            .masked_fill(attn_mask.logical_not(), float("-inf"))
+    rows = query.shape[-2]
+    batch_heads = query[..., 0, 0].numel()
+    chunk = max(1, _CHUNK_BYTES // max(1, batch_heads * key.shape[-2] * 4 * 3))  # fp32 scores, probs, grads
+    if chunk >= rows or is_causal or dropout_p > 0.0:
+        return _math(query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa)
+    outputs = []
+    for start in range(0, rows, chunk):
+        mask = attn_mask
+        if mask is not None and mask.dim() >= 2 and mask.shape[-2] != 1:
+            mask = mask[..., start:start + chunk, :]
+        outputs.append(_math(query[..., start:start + chunk, :], key, value, mask, 0.0, False, scale, enable_gqa))
+    return torch.cat(outputs, dim=-2)
 
 
 @functools.wraps(original_scaled_dot_product_attention)

@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--list", action="store_true", help="list the checks and exit")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--vae", help="a VAE for the VAE checks instead of a randomly initialized one: a diffusers "
-                                      "model folder (with vae/), a VAE folder or a single .safetensors file")
+                                      "model folder (with vae/), a VAE folder or a .safetensors file holding a VAE (read offline)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 

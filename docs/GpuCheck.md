@@ -10,7 +10,8 @@ GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA to
 ./run-cmd.sh rocm_check --only sdpa offloading     # checks whose "section / name" contains one of these
 ./run-cmd.sh rocm_check --resolutions 512 768 1024 # sizes for the speed checks (default 512 1024)
 ./run-cmd.sh rocm_check --only vae --vae /path/to/model   # the VAE checks with a real VAE (model folder with vae/,
-                                                          # a VAE folder or a .safetensors file)
+                                                          # a VAE folder, or a .safetensors file holding a VAE, e.g.
+                                                          # ComfyUI models/vae/ae.safetensors; read offline)
 ```
 
 It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to the current

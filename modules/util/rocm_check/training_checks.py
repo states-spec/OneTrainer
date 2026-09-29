@@ -327,6 +327,52 @@ def pinned_memory(ctx: Ctx, rec: Rec):
     rec.expect(not host.is_pinned(), "unpin_tensor_ releases it")
 
 
+def _vae_from_file(path: str):
+    """a VAE from one .safetensors file in the original (ComfyUI, A1111, BFL ae.safetensors) or diffusers layout, also
+    inside a full checkpoint. The config is read from the tensor shapes: diffusers' from_single_file fetches it from
+    Hugging Face instead, which fails offline and for gated repos."""
+    from diffusers import AutoencoderKL
+    from diffusers.loaders.single_file_utils import convert_ldm_vae_checkpoint
+
+    from safetensors import safe_open
+
+    with safe_open(path, framework="pt") as f:
+        keys = list(f.keys())
+        prefix = next((p for p in ("", "first_stage_model.", "vae.") if p + "encoder.conv_in.weight" in keys), None)
+        if prefix is None:
+            raise ValueError(f"{path} holds no VAE weights (no encoder.conv_in.weight): it is probably a transformer or "
+                             "UNet only file. Pass the VAE file (e.g. ComfyUI models/vae/ae.safetensors for "
+                             "Flux/Chroma) or a diffusers model folder with vae/")
+        parts = tuple(prefix + part for part in ("encoder.", "decoder.", "quant_conv.", "post_quant_conv."))
+        state = {k[len(prefix):]: f.get_tensor(k) for k in keys if k.startswith(parts)}
+
+    diffusers_layout = "encoder.down_blocks.0.resnets.0.conv1.weight" in state
+    block = "encoder.down_blocks.{}.resnets.0.conv2.weight" if diffusers_layout else "encoder.down.{}.block.0.conv2.weight"
+    block_out_channels = []
+    while block.format(len(block_out_channels)) in state:
+        block_out_channels.append(state[block.format(len(block_out_channels))].shape[0])
+    resnet = "encoder.down_blocks.0.resnets.{}.conv1.weight" if diffusers_layout else "encoder.down.0.block.{}.conv1.weight"
+    layers_per_block = 0
+    while resnet.format(layers_per_block) in state:
+        layers_per_block += 1
+    config = {
+        "in_channels": state["encoder.conv_in.weight"].shape[1],
+        "out_channels": state["decoder.conv_out.weight"].shape[0],
+        "latent_channels": state["encoder.conv_out.weight"].shape[0] // 2,
+        "down_block_types": ["DownEncoderBlock2D"] * len(block_out_channels),
+        "up_block_types": ["UpDecoderBlock2D"] * len(block_out_channels),
+        "block_out_channels": block_out_channels,
+        "layers_per_block": layers_per_block,
+        "use_quant_conv": "quant_conv.weight" in state,
+        "use_post_quant_conv": "post_quant_conv.weight" in state,
+    }
+    if not diffusers_layout:
+        state = convert_ldm_vae_checkpoint(state, config)
+    vae = AutoencoderKL(**config)
+    vae.load_state_dict(state, strict=True)
+    return vae.float()
+
+
 def _vae(ctx: Ctx, device: torch.device | None = None):
     """the VAE for the VAE checks, in fp32 as training caches with it: --vae if given, else the 16-channel layout of
     the Flux/Chroma/SD3-era models, randomly initialized (no download needed)"""
@@ -335,7 +381,7 @@ def _vae(ctx: Ctx, device: torch.device | None = None):
     device = device or ctx.device
     if ctx.vae_path:
         if os.path.isfile(ctx.vae_path):
-            vae = AutoencoderKL.from_single_file(ctx.vae_path, torch_dtype=torch.float32)
+            vae = _vae_from_file(ctx.vae_path)
         elif os.path.isdir(os.path.join(ctx.vae_path, "vae")):
             vae = AutoencoderKL.from_pretrained(ctx.vae_path, subfolder="vae", torch_dtype=torch.float32)
         else:

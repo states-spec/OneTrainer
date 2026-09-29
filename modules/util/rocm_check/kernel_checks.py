@@ -68,8 +68,10 @@ def int_mm(ctx: Ctx, rec: Rec):
         rec.expect(torch.equal(out.cpu().long(), ref), f"{m}x{k} @ {k}x{n} exact")
 
 
-@check(SECTION, "OneTrainer Triton 8-bit matmul (W8A8 backward)", gpu_only=True)
+@check(SECTION, "OneTrainer Triton 8-bit matmul (W8A8 backward)", gpu_only=True,
+       note="the first run compiles the kernel in its 16 autotune variants: a few minutes")
 def triton_mm_8bit(ctx: Ctx, rec: Rec):
+    from modules.util.torch_util import fp8_matmul_supported
     from modules.util.triton_mm_8bit import mm_8bit
 
     m, k, n = 1024, 3072, 3072
@@ -81,27 +83,33 @@ def triton_mm_8bit(ctx: Ctx, rec: Rec):
     wt = w.T.contiguous().to(ctx.device).T  # same values, strided like a transposed weight
     rec.expect(torch.equal(mm_8bit(ad, wt).cpu().long(), ref), "int8, strided rhs: exact")
 
-    af = _rand(ctx, m, k, seed=3).clamp(-448, 448).to(torch.float8_e4m3fn)
-    wf = _rand(ctx, k, n, seed=4).clamp(-448, 448).to(torch.float8_e4m3fn)
-    ref_f = af.double() @ wf.double()
-    err = rel_err(mm_8bit(af.to(ctx.device), wf.to(ctx.device)), ref_f)
-    rec.expect(err < 1e-4, f"fp8 e4m3: rel err {err:.2e}")
+    # the fp8 kernel only backs the float W8A8 types, which OneTrainer rejects on GPUs without fp8 matmul. There
+    # Triton emulates fp8 through fp16, and compiling that took over 10 minutes per variant for gfx1100
+    fp8 = fp8_matmul_supported(ctx.device)
+    if fp8:
+        af = _rand(ctx, m, k, seed=3).clamp(-448, 448).to(torch.float8_e4m3fn)
+        wf = _rand(ctx, k, n, seed=4).clamp(-448, 448).to(torch.float8_e4m3fn)
+        afd, wfd = af.to(ctx.device), wf.to(ctx.device)
+        err = rel_err(mm_8bit(afd, wfd), af.double() @ wf.double())
+        rec.expect(err < 1e-4, f"fp8 e4m3: rel err {err:.2e}")
+    else:
+        rec.line("fp8 not tested: no fp8 matmul on this GPU, so OneTrainer never runs the fp8 kernel here")
 
     bf = _rand(ctx, m, k, dtype=torch.bfloat16, seed=5).to(ctx.device)
     wb = _rand(ctx, k, n, dtype=torch.bfloat16, seed=6).to(ctx.device)
     t_bf16 = ctx.bench(lambda: bf @ wb)
     t_int8 = ctx.bench(lambda: mm_8bit(ad, wd))
     t_int8_strided = ctx.bench(lambda: mm_8bit(ad, wt))
-    afd, wfd = af.to(ctx.device), wf.to(ctx.device)
-    t_fp8 = ctx.bench(lambda: mm_8bit(afd, wfd))
     rec.metric(f"{m}x{k}x{n} ms bf16 matmul", t_bf16)
     rec.metric(f"{m}x{k}x{n} ms triton int8", t_int8)
     rec.metric(f"{m}x{k}x{n} ms triton int8 strided", t_int8_strided)
-    rec.metric(f"{m}x{k}x{n} ms triton fp8", t_fp8)
+    if fp8:
+        rec.metric(f"{m}x{k}x{n} ms triton fp8", ctx.bench(lambda: mm_8bit(afd, wfd)))
     rec.line(f"int8 is {t_bf16 / t_int8:.2f}x the speed of bf16 (>1 = faster)")
 
 
-@check(SECTION, "W8A8 linear layers forward+backward", gpu_only=True)
+@check(SECTION, "W8A8 linear layers forward+backward", gpu_only=True,
+       note="reuses the Triton kernels compiled by the check before it")
 def w8a8_layers(ctx: Ctx, rec: Rec):
     from modules.module.quantized.LinearW8A8 import LinearW8A8
     from modules.util.torch_util import fp8_matmul_supported

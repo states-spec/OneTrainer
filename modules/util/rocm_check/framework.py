@@ -81,14 +81,16 @@ class Check:
     gpu_only: bool = False
     full_only: bool = False
     timeout: float = 600.0
+    note: str = ""  # printed when the check starts, e.g. that it takes long the first time
 
 
 REGISTRY: list[Check] = []
 
 
-def check(section: str, name: str, gpu_only: bool = False, full_only: bool = False, timeout: float = 600.0):
+def check(section: str, name: str, gpu_only: bool = False, full_only: bool = False, timeout: float = 600.0,
+          note: str = ""):
     def register(fn):
-        REGISTRY.append(Check(section, name, fn, gpu_only, full_only, timeout))
+        REGISTRY.append(Check(section, name, fn, gpu_only, full_only, timeout, note))
         return fn
     return register
 
@@ -271,6 +273,8 @@ def run_checks(ctx: Ctx, report: Report, only: list[str] | None, skip: list[str]
     for i, c in enumerate(checks):
         label = f"{c.section} / {c.name}"
         print(f"[{i + 1}/{len(checks)}] {label} ...", flush=True)
+        if c.note and not (c.gpu_only and not ctx.is_gpu) and not (c.full_only and not ctx.full):
+            print(f"    ({c.note})", flush=True)
         rec = Rec()
         t0 = time.perf_counter()
         if c.gpu_only and not ctx.is_gpu:

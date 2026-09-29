@@ -192,7 +192,7 @@ def sdpa_choice(ctx: Ctx, rec: Rec):
     rec.info()
     b, seq = 2, 1024
     for dtype in [torch.bfloat16, torch.float16, torch.float32]:
-        for d in HEAD_DIMS + [256]:
+        for d in HEAD_DIMS + [256, 512]:
             q = torch.zeros(b, 4, seq, d, dtype=dtype, device=ctx.device)
             masks = _masks(b, seq, seq, dtype, fully_masked_rows=True)
             masks["float32 key padding (dtype differs from q)"] = \
@@ -220,12 +220,14 @@ def sdpa_choice(ctx: Ctx, rec: Rec):
 def sdpa_correctness(ctx: Ctx, rec: Rec):
     b, h, seq = 2, 3, 257  # odd length: exercises the kernels' tail handling
     backends = [None, SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
-    dtypes = [torch.bfloat16, torch.float16] if ctx.full else [torch.bfloat16]
+    # fp32 is what the VAEs run their attention in, as one head of 512 (the extra head sizes run without masks)
+    dtypes = [torch.bfloat16, torch.float16, torch.float32] if ctx.full else [torch.bfloat16, torch.float32]
     for dtype in dtypes:
-        for d in HEAD_DIMS:
+        for d in HEAD_DIMS + [256, 512]:
             q, k, v = (_rand(ctx, b, h, seq, d, dtype=dtype, seed=s) for s in (1, 2, 3))
             g = _rand(ctx, b, h, seq, d, dtype=dtype, seed=4)
-            for mask_name, mask in _masks(b, seq, seq, dtype, fully_masked_rows=True).items():
+            masks = _masks(b, seq, seq, dtype, fully_masked_rows=True) if d in HEAD_DIMS else {"no mask": None}
+            for mask_name, mask in masks.items():
                 qr, kr, vr = (t.double().requires_grad_() for t in (q, k, v))
                 ref = _attention_reference(qr, kr, vr, mask)
                 ref.backward(g.double())

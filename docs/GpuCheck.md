@@ -9,6 +9,8 @@ GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA to
 ./run-cmd.sh rocm_check --list     # the checks
 ./run-cmd.sh rocm_check --only sdpa offloading     # checks whose "section / name" contains one of these
 ./run-cmd.sh rocm_check --resolutions 512 768 1024 # sizes for the speed checks (default 512 1024)
+./run-cmd.sh rocm_check --only vae --vae /path/to/model   # the VAE checks with a real VAE (model folder with vae/,
+                                                          # a VAE folder or a .safetensors file)
 ```
 
 It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to the current
@@ -40,6 +42,9 @@ results up to the check that was running (the report names it). The exit code is
    - pinned host memory and transfer speed
    - concurrent VAE encodes, as caching with `dataloader_threads` > 1 does, with and without the lock OneTrainer
      now uses (on ROCm, unlocked concurrent encodes once gave random NaN latents)
+   - the VAE encoder layer by layer against a CPU reference, in the main thread and in worker threads (where
+     caching runs it), and with MIOpen off or the math attention kernel: it names the first layer that goes wrong
+     and which switch avoids it
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
    runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments`, and `torch.compile`.

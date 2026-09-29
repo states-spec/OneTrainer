@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--skip", nargs="+", help="skip checks whose 'section / name' contains one of these")
     parser.add_argument("--list", action="store_true", help="list the checks and exit")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--vae", help="a VAE for the VAE checks instead of a randomly initialized one: a diffusers "
+                                      "model folder (with vae/), a VAE folder or a single .safetensors file")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -48,7 +50,8 @@ def main():
     if device.type == "cuda":
         torch.cuda.set_device(device)
     ctx = Ctx(device=device, full=args.full, out_dir=os.path.abspath(args.out_dir),
-              script_path=os.path.abspath(__file__), resolutions=args.resolutions, seed=args.seed)
+              script_path=os.path.abspath(__file__), resolutions=args.resolutions, seed=args.seed,
+              vae_path=args.vae)
 
     if args.child:
         child_main(args.child, ctx)

@@ -4,6 +4,7 @@ VAE encodes (the ROCm NaN-latent bug the caching lock works around).
 """
 import copy
 import io
+import os
 import threading
 import time
 
@@ -206,10 +207,19 @@ def optimizers(ctx: Ctx, rec: Rec):
             # the same fp32 run on the GPU and on the CPU should end at (nearly) the same weights
             runs = {}
             for device in (ctx.device, torch.device("cpu")):
-                r = _OptimizerRun(ctx, optimizer, precision, device, torch.float32)
-                for i in range(6):
-                    r.step(i)
+                try:
+                    r = _OptimizerRun(ctx, optimizer, precision, device, torch.float32)
+                    for i in range(6):
+                        r.step(i)
+                except RuntimeError as e:
+                    if device.type != "cpu":
+                        raise
+                    # e.g. bitsandbytes' 8-bit optimizers run only on the GPU
+                    rec.line(f"{label_opt}: no CPU run to compare with ({str(e).splitlines()[0][:80]})")
+                    break
                 runs[device.type] = r.weights()
+            if "cpu" not in runs:
+                continue
             diff = max(rel_err(a, b) for a, b in zip(runs["cuda"], runs["cpu"], strict=True))
             rec.expect(diff < 1e-3, f"{label_opt} fp32: GPU vs CPU after 6 steps rel diff {diff:.1e} (limit 1e-3)")
 
@@ -316,16 +326,129 @@ def pinned_memory(ctx: Ctx, rec: Rec):
     rec.expect(not host.is_pinned(), "unpin_tensor_ releases it")
 
 
-def _tiny_vae_encoder(ctx: Ctx):
+def _vae(ctx: Ctx, device: torch.device | None = None):
+    """the VAE for the VAE checks, in fp32 as training caches with it: --vae if given, else the 16-channel layout of
+    the Flux/Chroma/SD3-era models, randomly initialized (no download needed)"""
     from diffusers import AutoencoderKL
 
-    torch.manual_seed(0)
-    # the 16-channel VAE layout of Flux/Chroma/SD3-era models, randomly initialized (no download needed)
-    vae = AutoencoderKL(in_channels=3, out_channels=3, latent_channels=16,
-                        down_block_types=["DownEncoderBlock2D"] * 4, up_block_types=["UpDecoderBlock2D"] * 4,
-                        block_out_channels=[128, 256, 512, 512], layers_per_block=2,
-                        use_quant_conv=False, use_post_quant_conv=False)
-    return vae.to(ctx.device).eval().requires_grad_(False)
+    device = device or ctx.device
+    if ctx.vae_path:
+        if os.path.isfile(ctx.vae_path):
+            vae = AutoencoderKL.from_single_file(ctx.vae_path, torch_dtype=torch.float32)
+        elif os.path.isdir(os.path.join(ctx.vae_path, "vae")):
+            vae = AutoencoderKL.from_pretrained(ctx.vae_path, subfolder="vae", torch_dtype=torch.float32)
+        else:
+            vae = AutoencoderKL.from_pretrained(ctx.vae_path, torch_dtype=torch.float32)
+    else:
+        torch.manual_seed(0)
+        vae = AutoencoderKL(in_channels=3, out_channels=3, latent_channels=16,
+                            down_block_types=["DownEncoderBlock2D"] * 4, up_block_types=["UpDecoderBlock2D"] * 4,
+                            block_out_channels=[128, 256, 512, 512], layers_per_block=2,
+                            use_quant_conv=False, use_post_quant_conv=False)
+    return vae.to(device).eval().requires_grad_(False)
+
+
+def _vae_image(ctx: Ctx, res: int, seed: int) -> torch.Tensor:
+    # a smooth random image in [-1, 1]: closer to a photo than per-pixel noise
+    low = torch.rand(1, 3, max(res // 16, 2), max(res // 16, 2), generator=ctx.generator(seed))
+    return (F.interpolate(low, size=(res, res), mode="bicubic", align_corners=False).clamp(0, 1) * 2 - 1)
+
+
+_LAYER_TYPES = (nn.Conv2d, nn.GroupNorm, nn.Linear)
+
+
+def _encode_with_layer_errors(vae, img: torch.Tensor, reference: dict | None):
+    """encodes img; with a reference (layer name -> CPU output), returns each layer's rel error to it in call order.
+    Without one, returns the layer outputs themselves (as the reference)."""
+    from diffusers.models.attention_processor import Attention
+
+    records, hooks = [], []
+    for name, module in vae.encoder.named_modules():
+        if isinstance(module, _LAYER_TYPES + (Attention,)):
+            def hook(mod, args, out, name=name):
+                out = out[0] if isinstance(out, tuple) else out
+                if reference is None:
+                    records.append((name, out.detach().float().cpu().clone()))
+                else:
+                    records.append((name, type(mod).__name__, rel_err(out, reference[name]), finite(out)))
+            hooks.append(module.register_forward_hook(hook))
+    try:
+        with torch.no_grad():
+            latent = vae.encode(img).latent_dist.mean.float().cpu()
+    finally:
+        for h in hooks:
+            h.remove()
+    return (dict(records) if reference is None else records), latent
+
+
+@check(SECTION, "VAE encode per layer: main thread vs worker threads, MIOpen and attention toggles",
+       note="compares every layer of the VAE encoder against a CPU reference; the CPU part takes a while")
+def vae_layers(ctx: Ctx, rec: Rec):
+    """caching runs the VAE in worker threads. This finds the first layer (if any) whose output differs from a CPU
+    float64-checked reference, per run, and which runtime toggle makes the difference go away."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    res = 128 if ctx.device.type == "cpu" else (512 if ctx.full else 256)
+    img = _vae_image(ctx, res, seed=7)
+    rec.line(f"{'VAE ' + ctx.vae_path if ctx.vae_path else 'random-init 16-channel VAE'}, fp32, {res}x{res} image")
+
+    reference, ref_latent = _encode_with_layer_errors(_vae(ctx, torch.device("cpu")), img, None)
+    vae = _vae(ctx)
+    img_d = img.to(ctx.device)
+    miopen_default = torch.backends.cudnn.enabled
+
+    def run(label: str, thread: bool, miopen: bool = True, math_attention: bool = False):
+        out = {}
+
+        def body():
+            try:
+                if math_attention:
+                    with sdpa_kernel([SDPBackend.MATH]):
+                        out["r"] = _encode_with_layer_errors(vae, img_d, reference)
+                else:
+                    out["r"] = _encode_with_layer_errors(vae, img_d, reference)
+            except Exception as e:
+                out["e"] = f"{type(e).__name__}: {e}"
+
+        torch.backends.cudnn.enabled = miopen
+        try:
+            if thread:
+                t = threading.Thread(target=body)
+                t.start()
+                t.join()
+            else:
+                body()
+        finally:
+            torch.backends.cudnn.enabled = miopen_default
+        if "e" in out:
+            rec.fail(f"{label}: {out['e']}")
+            return None
+        records, latent = out["r"]
+        final = rel_err(latent, ref_latent)
+        bad = [r for r in records if not r[3] or r[2] > 1e-3]
+        if not bad and final < 1e-3:
+            rec.line(f"ok: {label}: every layer matches the CPU (latent rel err {final:.1e})")
+            return True
+        name, kind, err, is_finite = bad[0] if bad else ("(none)", "", final, True)
+        types = sorted({r[1] for r in bad})
+        rec.fail(f"{label}: latent rel err {final:.2e}; first wrong layer {name} ({kind}): "
+                 f"{'NaN/inf' if not is_finite else f'rel err {err:.2e}'}; wrong layer types: {', '.join(types)}")
+        return False
+
+    results = {
+        "main": run("main thread", False),
+        "main again": run("main thread, again", False),
+        "worker": run("worker thread", True),
+        "worker again": run("another worker thread", True),
+    }
+    if ctx.is_gpu:
+        results["worker no MIOpen"] = run("worker thread, MIOpen off (torch.backends.cudnn.enabled=False)", True,
+                                          miopen=False)
+        results["worker math attention"] = run("worker thread, SDPA math kernel", True, math_attention=True)
+        results["main no MIOpen"] = run("main thread, MIOpen off", False, miopen=False)
+    fixes = [k for k, v in results.items() if v and not results.get(k.split(" no ")[0].split(" math")[0], True)]
+    if fixes:
+        rec.line("the runs that match where the plain run doesn't: " + ", ".join(fixes))
 
 
 @check(SECTION, "concurrent VAE encodes (caching with dataloader_threads > 1)")
@@ -333,23 +456,28 @@ def concurrent_encodes(ctx: Ctx, rec: Rec):
     """caching encodes images in several threads on the same GPU; on ROCm that once gave random all-NaN latents.
     OneTrainer now encodes one at a time (DataLoaderMgdsMixin._run_models_one_at_a_time). This measures whether
     unlocked concurrent encodes still go wrong on this GPU, and that locked ones don't."""
-    encoder = _tiny_vae_encoder(ctx)
+    encoder = _vae(ctx)
     res = 512 if ctx.full else 256
     if ctx.device.type == "cpu":
         res = 128
     count = 8 if ctx.full else 4
     rounds = 6 if ctx.full else 2
-    images = [(torch.rand(1, 3, res, res, generator=ctx.generator(i)) * 2 - 1).to(ctx.device) for i in range(count)]
+    images = [_vae_image(ctx, res, seed=i).to(ctx.device) for i in range(count)]
 
     def encode(img):
         with torch.no_grad():
             return encoder.encode(img).latent_dist.mean
 
     reference = [encode(img).cpu() for img in images]
-    serial_bad = sum(1 for img, ref in zip(images, reference, strict=True)
-                     if not finite(encode(img)) or rel_err(encode(img), ref) > 1e-3)
-    rec.expect(serial_bad == 0 and all(finite(r) for r in reference),
-               f"serial encodes finite and repeatable ({serial_bad} bad of {count})")
+    serial_bad = []
+    for i, (img, ref) in enumerate(zip(images, reference, strict=True)):
+        again = encode(img)
+        if not finite(ref) or not finite(again):
+            serial_bad.append(f"image {i}: NaN/inf")
+        elif rel_err(again, ref) > 1e-3:
+            serial_bad.append(f"image {i}: rel err {rel_err(again, ref):.1e}")
+    rec.expect(not serial_bad, f"serial encodes finite and repeatable in the main thread ({len(serial_bad)} bad of "
+                               f"{count}{': ' + ', '.join(serial_bad) if serial_bad else ''})")
 
     for threads in (2, 4):
         for locked in (False, True):

@@ -113,6 +113,7 @@ class Ctx:
     script_path: str
     resolutions: list[int]
     seed: int = 0
+    vae_path: str | None = None  # a real VAE for the VAE checks instead of a randomly initialized one
     cache: dict = field(default_factory=dict)
 
     @property

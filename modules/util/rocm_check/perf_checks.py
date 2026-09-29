@@ -238,12 +238,21 @@ def compile_speed(ctx: Ctx, rec: Rec):
     x = _rand(ctx, 1, 1357, 1536, seed=1).requires_grad_()
     ref = block(x)
     eager_ms = ctx.bench(lambda: block(x).float().sum().backward())
+    from torch._dynamo.utils import counters
+
+    counters.clear()
     compiled = torch.compile(block, fullgraph=True)
     t0 = time.perf_counter()
     out = compiled(x)
     out.float().sum().backward()
     ctx.sync()
     compile_s = time.perf_counter() - t0
+    graphs = counters["stats"].get("unique_graphs", 0)
+    cache_hits = sum(v for k, v in counters["inductor"].items() if "cache_hit" in k)
+    rec.line(f"dynamo compiled {graphs} graph(s), {sum(counters['graph_break'].values())} graph break(s), "
+             f"{cache_hits} inductor cache hit(s) (a hit loads kernels compiled by an earlier run)")
+    if graphs == 0:
+        rec.warn("torch.compile compiled nothing: the timing below is eager")
     err = rel_err(out, ref)
     rec.expect(finite(out) and err < 3e-2, f"compiled output vs eager: rel err {err:.1e}")
     compiled_ms = ctx.bench(lambda: compiled(x).float().sum().backward())

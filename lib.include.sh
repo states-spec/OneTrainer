@@ -27,6 +27,7 @@ export OT_PYTHON_VENV="${OT_PYTHON_VENV:-venv}"
 export OT_PREFER_VENV="${OT_PREFER_VENV:-true}"
 export OT_LAZY_UPDATES="${OT_LAZY_UPDATES:-false}"
 export OT_CUDA_LOWMEM_MODE="${OT_CUDA_LOWMEM_MODE:-false}"
+export OT_EXPANDABLE_SEGMENTS="${OT_EXPANDABLE_SEGMENTS:-false}"
 export OT_PLATFORM_REQUIREMENTS="${OT_PLATFORM_REQUIREMENTS:-detect}"
 export OT_SCRIPT_DEBUG="${OT_SCRIPT_DEBUG:-false}"
 
@@ -44,9 +45,17 @@ if [[ "${OT_HOST_OS}" == "Darwin" ]]; then
     export PYTORCH_ENABLE_MPS_FALLBACK="1"
 fi
 
-# Change PyTorch memory allocation to reduce CUDA out-of-memory situations.
+# Change PyTorch memory allocation to reduce CUDA out-of-memory situations. Both options go into one variable, because
+# PyTorch reads only the first of PYTORCH_CUDA_ALLOC_CONF, PYTORCH_HIP_ALLOC_CONF and PYTORCH_ALLOC_CONF that is set.
+OT_ALLOC_CONF=""
 if [[ "${OT_CUDA_LOWMEM_MODE}" == "true" ]]; then
-    export PYTORCH_CUDA_ALLOC_CONF="garbage_collection_threshold:0.6,max_split_size_mb:128"
+    OT_ALLOC_CONF="garbage_collection_threshold:0.6,max_split_size_mb:128"
+fi
+if [[ "${OT_EXPANDABLE_SEGMENTS}" == "true" ]]; then
+    OT_ALLOC_CONF="${OT_ALLOC_CONF:+${OT_ALLOC_CONF},}expandable_segments:True"
+fi
+if [[ -n "${OT_ALLOC_CONF}" ]]; then
+    export PYTORCH_CUDA_ALLOC_CONF="${OT_ALLOC_CONF}"
 fi
 
 # Utility functions.

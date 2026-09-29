@@ -1,3 +1,4 @@
+import os
 from abc import ABCMeta
 from contextlib import nullcontext
 from uuid import uuid4
@@ -11,7 +12,7 @@ from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType
 from modules.util.modelSpec.ModelSpec import ModelSpec
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
-from modules.util.torch_util import device_equals, torch_gc
+from modules.util.torch_util import device_equals, torch_gc, vram_summary
 from modules.util.TrainProgress import TrainProgress
 
 import torch
@@ -65,6 +66,13 @@ class BaseModelEmbedding:
             self.vector.requires_grad_(requires_grad)
 
 
+def _log_vram(device: torch.device, when: str):
+    # OT_LOG_VRAM=true prints the GPU memory use at every model part swap (sampling, caching, backups), to find the
+    # moment that runs out of memory
+    if os.environ.get("OT_LOG_VRAM", "").lower() in ("1", "true", "yes"):
+        print(f"VRAM {when}: {vram_summary(device)}")
+
+
 class BaseModel(metaclass=ABCMeta):
     model_type: ModelType
     parameters: NamedParameterGroupCollection | None
@@ -107,14 +115,24 @@ class BaseModel(metaclass=ABCMeta):
 
     def materialize(self, *parts: str):
         # Move `parts` onto train_device.
-        for part in parts:
-            self._move_part(part, self.train_device)
+        part = None
+        try:
+            for part in parts:
+                self._move_part(part, self.train_device)
+        except torch.OutOfMemoryError:
+            print(f"Out of GPU memory while loading {part} onto {self.train_device} ({vram_summary(self.train_device)}). "
+                  f"If much memory is reserved by PyTorch without tensors, it is fragmented: launching with "
+                  f"OT_EXPANDABLE_SEGMENTS=true can help (test it first, see LAUNCH-SCRIPTS.md). Otherwise less of the "
+                  f"model has to stay on the GPU: raise the part's layer offload fraction, or use a smaller weight data type.")
+            raise
+        _log_vram(self.train_device, f"after loading {', '.join(parts)}")
 
     def evict(self, *parts: str):
         # Move `parts` onto temp_device. No parts given -> every component in ModelType.model_parts().
         for part in parts or self.model_type.model_parts():
             self._move_part(part, self.temp_device)
         torch_gc()
+        _log_vram(self.train_device, f"after unloading {', '.join(parts) if parts else 'all parts'}")
 
     def materialize_only(self, *parts: str):
         # Materialize exactly `parts` on train_device; evict every other component in ModelType.model_parts()

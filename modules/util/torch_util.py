@@ -233,6 +233,20 @@ def torch_gc():
         torch.mps.empty_cache()
 
 
+def vram_summary(device: torch.device) -> str:
+    # one line on how the GPU memory is used: by tensors, held by PyTorch's cache without a tensor in it (reusable, but
+    # only in pieces: fragmentation when large), and still free on the device (other processes, e.g. the desktop, use
+    # the rest)
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return f"no GPU memory statistics for {device}"
+    gib = 2 ** 30
+    allocated = torch.cuda.memory_allocated(device)
+    reserved = torch.cuda.memory_reserved(device)
+    free, total = torch.cuda.mem_get_info(device)
+    return (f"{allocated / gib:.2f} GiB in tensors, {(reserved - allocated) / gib:.2f} GiB more reserved by PyTorch, "
+            f"{free / gib:.2f} GiB free of {total / gib:.2f} GiB on the device")
+
+
 def torch_sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()

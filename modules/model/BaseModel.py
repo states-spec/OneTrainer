@@ -1,3 +1,4 @@
+import itertools
 import os
 from abc import ABCMeta
 from contextlib import nullcontext
@@ -121,11 +122,28 @@ class BaseModel(metaclass=ABCMeta):
                 self._move_part(part, self.train_device)
         except torch.OutOfMemoryError:
             print(f"Out of GPU memory while loading {part} onto {self.train_device} ({vram_summary(self.train_device)}). "
-                  f"If much memory is reserved by PyTorch without tensors, it is fragmented: launching with "
+                  f"{self._part_weights_summary(part)}If much memory is reserved by PyTorch without tensors, it is fragmented: launching with "
                   f"OT_EXPANDABLE_SEGMENTS=true can help (test it first, see LAUNCH-SCRIPTS.md). Otherwise less of the "
                   f"model has to stay on the GPU: raise the part's layer offload fraction, or use a smaller weight data type.")
             raise
         _log_vram(self.train_device, f"after loading {', '.join(parts)}")
+
+    def _part_weights_summary(self, part: str) -> str:
+        # e.g. "transformer weights: 33.21 GiB (float32). " -- a part left at the FLOAT_32 default weight dtype is the
+        # usual reason a model that fits in bf16 doesn't fit
+        stem = f"{part}_1" if hasattr(self, f"{part}_1") else part
+        component = getattr(self, stem, None)
+        if not isinstance(component, torch.nn.Module):
+            return ""
+        by_dtype = {}
+        for tensor in itertools.chain(component.parameters(), component.buffers()):
+            by_dtype[tensor.dtype] = by_dtype.get(tensor.dtype, 0) + tensor.numel() * tensor.element_size()
+        if not by_dtype:
+            return ""
+        total = sum(by_dtype.values()) / 2**30
+        dtypes = ", ".join(f"{str(dtype).removeprefix('torch.')} {size / 2**30:.2f} GiB"
+                           for dtype, size in sorted(by_dtype.items(), key=lambda x: -x[1]))
+        return f"{part} weights: {total:.2f} GiB ({dtypes}); its weight data type is set per part on the model tab. "
 
     def evict(self, *parts: str):
         # Move `parts` onto temp_device. No parts given -> every component in ModelType.model_parts().

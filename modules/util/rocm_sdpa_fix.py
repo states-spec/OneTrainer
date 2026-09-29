@@ -5,7 +5,8 @@ there for a head size of 512, in fp32, bf16 and fp16 (measured on an RX 7900 XTX
 errors of 1 to 17, while the math kernel matches a float64 reference). PyTorch limits gfx11 to a head size of 256 only
 for AOTriton 0.11 (aotriton_max_hdim in aten/src/ATen/native/transformers/cuda/sdp_utils.cpp), so 0.12b gets no limit.
 Every VAE (SD1.5 to Flux/Chroma) has one 512-wide attention head in its middle block, so without this every latent
-cached and every image decoded on such a GPU was wrong by 25-40%.
+cached and every image decoded on such a GPU was wrong (the Flux/Chroma ae.safetensors latent by 9%, a randomly
+initialized VAE's by 25-40%).
 
 install() replaces torch.nn.functional.scaled_dot_product_attention, which diffusers and transformers look up on
 every call. Other calls go straight to PyTorch's function.

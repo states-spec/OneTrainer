@@ -825,9 +825,11 @@ class GenericTrainer(BaseTrainer):
                         # checked before the optimizer step: a NaN loss means NaN gradients, which would go into the
                         # weights and the optimizer state (and can crash the GPU runtime). The loss is already reduced
                         # over all GPUs, so every rank stops. A fused back pass has already applied them by now.
+                        # An infinite loss does the same damage, except with fp16 training, whose grad scaler skips
+                        # steps with infinite gradients itself.
                         accumulated_loss_cpu = accumulated_loss.item()
-                        if math.isnan(accumulated_loss_cpu):
-                            raise RuntimeError("Training loss became NaN. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
+                        if math.isnan(accumulated_loss_cpu) or (math.isinf(accumulated_loss_cpu) and not (scaler and scaler.is_enabled())):
+                            raise RuntimeError(f"Training loss became {'NaN' if math.isnan(accumulated_loss_cpu) else 'infinite'}. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
 
                         if self.config.fused_gradient_reduce:
                             multi.finish_async(self.config.gradient_reduce_precision)

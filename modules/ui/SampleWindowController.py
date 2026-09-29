@@ -77,14 +77,16 @@ class SampleWindowController:
                     model_names.embedding.model_name = last_backup_path
                 else:  # fine-tunes
                     model_names.base_model = last_backup_path
+                    # the trained transformer is part of the backup, a configured override would replace it
+                    model_names.transformer_model = ""
 
                 print(f"Loading from backup '{last_backup_path}'...")
             else:
                 print("No backup found, loading without backup...")
 
-        if self.initial_train_config.quantization.cache_dir is None:
-            self.initial_train_config.quantization.cache_dir = self.initial_train_config.cache_dir + "/quantization"
-            os.makedirs(self.initial_train_config.quantization.cache_dir, exist_ok=True)
+        # always derive from the current cache_dir, see GenericTrainer.start()
+        self.initial_train_config.quantization.cache_dir = self.initial_train_config.cache_dir + "/quantization"
+        os.makedirs(self.initial_train_config.quantization.cache_dir, exist_ok=True)
 
         model = model_loader.load(
             model_type=self.initial_train_config.model_type,

@@ -14,6 +14,7 @@ from modules.util.torch_util import (
     tensors_record_stream,
     tensors_to_device_,
     torch_gc,
+    torch_sync,
     unpin_tensor_,
 )
 
@@ -27,6 +28,16 @@ def log(msg: str = ''):
     pass
     # print(msg)
     # MESSAGES.append(msg)
+
+
+def unpin_tensors_(tensors: list[torch.Tensor | None]):
+    # a non_blocking copy can still be reading from or writing to pinned memory. Unpinning (and then freeing) it
+    # before that copy finished lets the DMA engine access memory that is no longer pinned, so synchronize first.
+    tensors = [tensor for tensor in tensors if tensor is not None]
+    if tensors:
+        torch_sync()
+        for tensor in tensors:
+            unpin_tensor_(tensor)
 
 
 def clone_tensor_allocator(tensor: torch.Tensor) -> torch.Tensor:
@@ -143,10 +154,11 @@ class StaticLayerAllocator:
     def __init__(
             self,
             device: torch.device,
+            pin_memory: bool,
     ):
         self.device = device
         self.__allocate_statically = True
-        self.__is_pinned = device.type == "cpu"
+        self.__is_pinned = device.type == "cpu" and pin_memory
 
         self.__num_layers = 0
         self.__max_tensor_bytes = 0
@@ -206,9 +218,8 @@ class StaticLayerAllocator:
         if not self.__allocate_statically:
             return
 
-        for cache_tensor in self.cache_tensors:
-            if cache_tensor is not None and self.__is_pinned:
-                unpin_tensor_(cache_tensor)
+        if self.__is_pinned:
+            unpin_tensors_(self.cache_tensors)
 
         self.cache_tensors = [None] * len(self.cache_tensors)
         self.__tensor_allocators = [None] * len(self.__tensor_allocators)
@@ -241,10 +252,11 @@ class StaticActivationAllocator:
     def __init__(
             self,
             device: torch.device,
+            pin_memory: bool,
     ):
         self.__device = device
         self.__allocate_statically = True
-        self.__is_pinned = device.type == "cpu"
+        self.__is_pinned = device.type == "cpu" and pin_memory
 
         self.__cache_tensors = []
         self.__current_cache_tensor = 0
@@ -298,8 +310,7 @@ class StaticActivationAllocator:
         if len(self.__cache_tensors) > 1:
             # more than one tensor was allocated. this can be condensed into a single tensor to reduce fragmentation
             if self.__is_pinned:
-                for cache_tensor in self.__cache_tensors:
-                    unpin_tensor_(cache_tensor)
+                unpin_tensors_(self.__cache_tensors)
 
             self.__cache_tensors = []
             torch_gc()
@@ -320,8 +331,7 @@ class StaticActivationAllocator:
 
     def deallocate_cache(self):
         if self.__is_pinned:
-            for cache_tensor in self.__cache_tensors:
-                unpin_tensor_(cache_tensor)
+            unpin_tensors_(self.__cache_tensors)
 
         self.__cache_tensors = []
 
@@ -600,9 +610,12 @@ class LayerOffloadConductor:
             self.__layer_transfer_stream = None
             self.__activations_transfer_stream = None
 
-        self.__train_device_layer_allocator = StaticLayerAllocator(self.__train_device)
-        self.__temp_device_layer_allocator = StaticLayerAllocator(self.__temp_device)
-        self.__temp_device_activations_allocator = StaticActivationAllocator(self.__temp_device)
+        # pinned host memory is only needed for asynchronous (non_blocking) copies. Without async transfers, no
+        # memory is registered with the driver at all.
+        pin_memory = self.__async_transfer
+        self.__train_device_layer_allocator = StaticLayerAllocator(self.__train_device, pin_memory)
+        self.__temp_device_layer_allocator = StaticLayerAllocator(self.__temp_device, pin_memory)
+        self.__temp_device_activations_allocator = StaticActivationAllocator(self.__temp_device, pin_memory)
 
         self.__layer_train_event_map = []
         self.__layer_transfer_event_map = []
@@ -892,6 +905,12 @@ class LayerOffloadConductor:
                         return
 
         with create_stream_context(self.__layer_transfer_stream):
+            if not is_forward and self.__async_transfer and device_equals(device, self.__temp_device):
+                # during the back pass, the layer's train event is recorded after its recompute, before its backward
+                # kernels are queued. Those kernels still read the weights, and the freed memory is reused for the next
+                # layer right away, so wait for all train work queued so far instead.
+                self.__layer_train_event_map[layer_index] = \
+                    SyncEvent(self.__train_stream.record_event(), f"train on {self.__train_device}")
             self.__wait_layer_train(layer_index)
             layer = self.__layers[layer_index]
             for module in layer.modules():

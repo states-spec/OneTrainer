@@ -22,6 +22,10 @@ class InternalModelSaverMixin(metaclass=ABCMeta):
         optimizer_state_dict["param_group_mapping"] = model.param_group_mapping
         optimizer_state_dict["param_group_optimizer_mapping"] = \
             [str(model.train_config.optimizer.optimizer) for _ in model.param_group_mapping]
+        if model.train_config.optimizer.optimizer is not None and model.train_config.optimizer.optimizer.is_adv_optm:
+            import adv_optm
+            # checked on load, adv_optm can't load the state of other minor versions
+            optimizer_state_dict["adv_optm_version"] = getattr(adv_optm, "__version__", "unknown")
 
         torch.save(optimizer_state_dict, os.path.join(destination, "optimizer", "optimizer.pt"))
 

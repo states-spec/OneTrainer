@@ -608,9 +608,13 @@ def inline_frame(master, row: int, col: int, columnspan: int = 1):
 def set_widget_enabled(widget, enabled: bool) -> None:
     state = "normal" if enabled else "disabled"
     if isinstance(widget, ctk.CTkFrame):
+        # like QWidget.setEnabled, also reach widgets in nested frames (e.g. a path entry's entry and button)
         for child in widget.children.values():
-            with contextlib.suppress(Exception):
-                child.configure(state=state)
+            if isinstance(child, ctk.CTkFrame):
+                set_widget_enabled(child, enabled)
+            else:
+                with contextlib.suppress(Exception):
+                    child.configure(state=state)
     else:
         widget.configure(state=state)
 

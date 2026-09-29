@@ -1,6 +1,8 @@
 
 from modules.util import path_util
 from modules.util.enum.ModelType import PeftType
+from modules.util.enum.TrainingMethod import TrainingMethod
+from modules.util.ui.training_method_notice import build_training_method_notice
 from modules.util.ui.validation_helpers import check_range
 
 
@@ -9,6 +11,10 @@ class BaseLoraTabView:
         self.components = components
 
     def build(self, frame, controller, ui_state, setup_lora_callback):
+        # before the Type dropdown, whose command builds the options right away
+        self.in_use = build_training_method_notice(self.components, frame, 0, 2, controller.train_config, ui_state,
+                                                   TrainingMethod.LORA)
+
         self.components.label(frame, 0, 0, "Type",
                               tooltip="The type of low-parameter finetuning method.")
         self.components.options_kv(frame, 0, 1, controller.get_peft_types(),
@@ -162,3 +168,6 @@ class BaseLoraTabView:
             self.components.label(master, 6, 3, "Bundle Embeddings",
                                   tooltip=f"Bundles any additional embeddings into the {name} output file, rather than as separate files")
             self.components.switch(master, 6, 4, ui_state, "bundle_additional_embeddings")
+
+        if not self.in_use:
+            self.components.set_widget_enabled(master, False)

@@ -210,7 +210,7 @@ class PySide6ConceptWindowView(BaseConceptWindowView, QDialog):
     def _cleanup(self):
         # stop the background scan thread (reuses the Abort Scan mechanism) so it
         # stops touching this window's widgets, and release the matplotlib figure
-        self.controller.cancel_scan_flag.set()
+        self.controller.close()
         if self.bucket_fig is not None:
             plt.close(self.bucket_fig)
             self.bucket_fig = None

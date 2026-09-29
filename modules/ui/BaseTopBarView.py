@@ -4,7 +4,7 @@ from collections.abc import Callable
 from modules.util import path_util
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
-from modules.util.optimizer_util import change_optimizer
+from modules.util.optimizer_util import update_optimizer_config
 
 
 class BaseTopBarView:
@@ -108,6 +108,7 @@ class BaseTopBarView:
         )
 
     def __change_model_type(self, model_type: ModelType):
+        self.controller.update_base_model_for(model_type, self.ui_state)
         self.change_model_type_callback(model_type)
         self.__create_training_method()
 
@@ -124,8 +125,9 @@ class BaseTopBarView:
 
         self.ui_state.update(loaded_config)
 
-        optimizer_config = change_optimizer(self.controller.train_config)
-        self.ui_state.get_var("optimizer").update(optimizer_config)
+        # the loaded optimizer settings win over the ones remembered for this optimizer (they used to be replaced by
+        # them, or by the UI defaults when the file had none), and are remembered for when it is picked again
+        update_optimizer_config(self.controller.train_config)
 
         self.load_preset_callback()
 

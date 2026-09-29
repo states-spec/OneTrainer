@@ -50,6 +50,9 @@ class PySide6OptimizerParamsWindowView(BaseOptimizerParamsWindowView, QDialog):
         if self._dynamic_frame is not None:
             self._dynamic_frame.hide()
             self._dynamic_frame.deleteLater()
+        # the old button is deleted with its frame; an optimizer without MuonWithAuxAdam builds no new one, and a
+        # later call on the stale reference raised mid-update, leaving the config with part of the old optimizer's values
+        self.muon_adam_button = None
 
         self._dynamic_frame = QWidget(self._frame)
         pyside6_components._layout(self._frame).addWidget(self._dynamic_frame, 1, 0, 1, 5)

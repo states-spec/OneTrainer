@@ -66,6 +66,7 @@ class FluxModel(BaseModel):
 
     text_encoder_2_train_dtype: DataType
 
+    text_encoder_1_offload_conductor: LayerOffloadConductor | None
     text_encoder_2_offload_conductor: LayerOffloadConductor | None
     transformer_offload_conductor: LayerOffloadConductor | None
 
@@ -103,6 +104,7 @@ class FluxModel(BaseModel):
 
         self.text_encoder_2_train_dtype = DataType.FLOAT_32
 
+        self.text_encoder_1_offload_conductor = None
         self.text_encoder_2_offload_conductor = None
         self.transformer_offload_conductor = None
 

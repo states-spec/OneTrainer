@@ -42,6 +42,12 @@ class ConceptWindowController:
         self.concept = concept
         self.cancel_scan_flag = threading.Event()
         self.scan_thread = None
+        self.closed = False
+
+    def close(self):
+        # called when the window closes: stops a running scan, and the automatic scan's follow-up
+        self.closed = True
+        self.cancel_scan_flag.set()
 
     @staticmethod
     def get_concept_path(path: str) -> str | None:
@@ -107,6 +113,18 @@ class ConceptWindowController:
                     if file_index == image_preview_file_index:
                         break
 
+        try:
+            return self._build_preview(preview_image_path, preview_augmentations)
+        except Exception as e:
+            # a file that can't be read (empty, truncated, not an image, too large for PIL) or a mask that doesn't fit
+            # its image: show the placeholder and name the file, instead of the window failing to open
+            image = load_image("resources/icons/icon.png", 'RGB')
+            image.thumbnail((300, 300))
+            name = os.path.basename(preview_image_path)
+            error = str(e).replace(str(preview_image_path), name)
+            return image, f"{name}: can't be previewed ({type(e).__name__}: {error})", ""
+
+    def _build_preview(self, preview_image_path: str, preview_augmentations: bool):
         image = load_image(preview_image_path, 'RGB')
         image_tensor = functional.to_tensor(image)
 
@@ -234,6 +252,8 @@ class ConceptWindowController:
         return image, filename_output, prompt_output
 
     def get_concept_stats(self, view, advanced_checks: bool, wait_time: float):
+        if self.closed:
+            return
         start_time = time.perf_counter()
         last_update = time.perf_counter()
         self.cancel_scan_flag.clear()
@@ -245,6 +265,7 @@ class ConceptWindowController:
            view.components.call_after(view.concept_stats_tab, 0, view._enable_scan_buttons)
            return
         subfolders = [concept_path]
+        visited = {os.path.realpath(concept_path)}
 
         stats_dict = concept_stats.init_concept_stats(advanced_checks)
         for path in subfolders:
@@ -252,7 +273,10 @@ class ConceptWindowController:
                 break
             stats_dict = concept_stats.folder_scan(path, stats_dict, advanced_checks, self.concept, start_time, wait_time, self.cancel_scan_flag)
             if self.concept.include_subdirectories and not self.cancel_scan_flag.is_set():     #add all subfolders of current directory to for loop
-                subfolders.extend([f for f in os.scandir(path) if f.is_dir() and not f.name.startswith('.')])
+                for f in os.scandir(path):
+                    if f.is_dir() and not f.name.startswith('.') and os.path.realpath(f.path) not in visited:
+                        visited.add(os.path.realpath(f.path))
+                        subfolders.append(f)
             self.concept.concept_stats = stats_dict
             #update GUI approx every half second
             if time.perf_counter() > (last_update + 0.5):
@@ -268,16 +292,20 @@ class ConceptWindowController:
         self.scan_thread.start()
 
     def auto_update_concept_stats(self, view):
-        try:
-            view._update_concept_stats(self)      #load stats from config if available, else raises KeyError
-            if self.concept.concept_stats["file_size"] == 0:  #force rescan if empty
-                raise KeyError
-        except KeyError:
-            concept_path = self.get_concept_path(self.concept.path)
-            if concept_path:
-                self.get_concept_stats(view, False, 2)    #force rescan if config is empty, timeout of 2 sec
-                if self.concept.concept_stats["processing_time"] < 0.1:
-                    self.get_concept_stats(view, True, 2)    #do advanced scan automatically if basic took <0.1s
+        # runs in a background thread: widgets may only be updated through call_after, which runs on the UI thread
+        stats = self.concept.concept_stats or {}
+        if all(key in stats for key in _DISPLAYED_STATS) and stats["file_size"] != 0:  #stats saved with the concept
+            view.components.call_after(view.concept_stats_tab, 0, lambda: view._update_concept_stats(self))
+            return
+        concept_path = self.get_concept_path(self.concept.path)
+        if concept_path:
+            self.get_concept_stats(view, False, 2)    #force rescan if config is empty, timeout of 2 sec
+            if not self.closed and self.concept.concept_stats["processing_time"] < 0.1:
+                self.get_concept_stats(view, True, 2)    #do advanced scan automatically if basic took <0.1s
+
+
+# the stats the window shows; saved stats missing one of them are scanned again
+_DISPLAYED_STATS = [key for key in concept_stats.init_concept_stats(False) if key != "force_cancelled"]
 
 
 class InputPipelineModule(

@@ -12,8 +12,8 @@ from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
 from modules.util.checkpointing_util import (
-    enable_checkpointing_for_basic_transformer_blocks,
     enable_checkpointing_for_clip_encoder_layers,
+    enable_checkpointing_for_stable_diffusion_unet,
 )
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.conv_util import apply_circular_padding_to_conv2d
@@ -52,8 +52,10 @@ class BaseStableDiffusionSetup(
 
         if config.unet.checkpointing_enabled():
             model.unet.enable_gradient_checkpointing()
-            enable_checkpointing_for_basic_transformer_blocks(model.unet, config, config.unet, supports_offloading=False)
-        enable_checkpointing_for_clip_encoder_layers(model.text_encoder, config, config.text_encoder)
+        if config.unet.checkpointing_or_offloading_enabled():
+            model.unet_offload_conductor = enable_checkpointing_for_stable_diffusion_unet(model.unet, config, config.unet)
+        model.text_encoder_offload_conductor = \
+            enable_checkpointing_for_clip_encoder_layers(model.text_encoder, config, config.text_encoder)
 
         if config.force_circular_padding:
             apply_circular_padding_to_conv2d(model.vae)

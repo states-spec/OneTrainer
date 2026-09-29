@@ -17,6 +17,7 @@ from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.trainer.BaseTrainer import BaseTrainer
 from modules.util import create, huggingface_util, path_util
 from modules.util.bf16_stochastic_rounding import set_seed as bf16_stochastic_rounding_set_seed
+from modules.util.cache_util import changed_cache_settings, save_cache_settings
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.compile_util import init_compile, reset_compile
@@ -86,11 +87,29 @@ class GenericTrainer(BaseTrainer):
         self.grad_hook_handles = []
 
     def start(self):
+        # checked up front: the saver only rejects an unsupported format when it first saves, after the training
+        formats = self.config.model_type.supported_output_formats(self.config.training_method)
+        if self.config.output_model_format not in formats:
+            raise ValueError(
+                f"Output format {self.config.output_model_format} can't save {self.config.training_method} training of "
+                f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
+            )
+
         if multi.is_master():
             self.__save_config_to_workspace()
 
-            if self.config.clear_cache_before_training and self.config.latent_caching:
-                self.__clear_cache()
+            if self.config.latent_caching:
+                if self.config.clear_cache_before_training:
+                    self.__clear_cache()
+                else:
+                    changed = changed_cache_settings(self.config)
+                    if changed is None:
+                        print("The cache has no record of the settings it was made with, so it is rebuilt.")
+                        self.__clear_cache()
+                    elif changed:
+                        print(f"The cache was made with different settings ({', '.join(changed)}), so it is rebuilt.")
+                        self.__clear_cache()
+                save_cache_settings(self.config)
 
         if self.config.train_dtype.enable_tf():
             torch.backends.cuda.matmul.allow_tf32 = True
@@ -114,6 +133,8 @@ class GenericTrainer(BaseTrainer):
                     model_names.embedding.model_name = last_backup_path
                 else:  # fine-tunes
                     model_names.base_model = last_backup_path
+                    # the trained transformer is part of the backup, a configured override would replace it
+                    model_names.transformer_model = ""
 
                 print(f"Continuing training from backup '{last_backup_path}'...")
             else:
@@ -128,8 +149,9 @@ class GenericTrainer(BaseTrainer):
 
         self.callbacks.on_update_status("loading the model")
 
-        if self.config.quantization.cache_dir is None:
-            self.config.quantization.cache_dir = self.config.cache_dir + "/quantization"
+        # always derive from the current cache_dir: a value persisted from an earlier run (e.g. a copied config)
+        # would otherwise keep pointing at that run's cache, or at a local path on a cloud machine
+        self.config.quantization.cache_dir = self.config.cache_dir + "/quantization"
         os.makedirs(self.config.quantization.cache_dir, exist_ok=True)
 
         self.model = self.model_loader.load(
@@ -514,8 +536,10 @@ class GenericTrainer(BaseTrainer):
             traceback.print_exc()
             tqdm.write("Could not save model. Check your disk space!")
             try:
-                if os.path.isfile(save_path):
+                if os.path.isdir(save_path):
                     shutil.rmtree(save_path)
+                elif os.path.isfile(save_path):
+                    os.remove(save_path)
             except Exception:
                 traceback.print_exc()
                 tqdm.write("Could not delete partial save")
@@ -688,7 +712,10 @@ class GenericTrainer(BaseTrainer):
                                  initial=train_progress.epoch_step)
             else:
                 batches = self.data_loader.get_data_loader()
+            epoch_started_at_step = train_progress.epoch_step
+            epoch_batch_count = 0
             for batch in batches:
+                epoch_batch_count += 1
                 multi.sync_commands(self.commands)
                 if self.commands.get_stop_command():
                     multi.warn_parameter_divergence(self.parameters, train_device)
@@ -768,6 +795,13 @@ class GenericTrainer(BaseTrainer):
                     accumulated_loss += detached_loss
 
                     if self.__is_update_step(train_progress):
+                        # checked before the optimizer step: a NaN loss means NaN gradients, which would go into the
+                        # weights and the optimizer state (and can crash the GPU runtime). The loss is already reduced
+                        # over all GPUs, so every rank stops. A fused back pass has already applied them by now.
+                        accumulated_loss_cpu = accumulated_loss.item()
+                        if math.isnan(accumulated_loss_cpu):
+                            raise RuntimeError("Training loss became NaN. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
+
                         if self.config.fused_gradient_reduce:
                             multi.finish_async(self.config.gradient_reduce_precision)
                         else:
@@ -795,10 +829,6 @@ class GenericTrainer(BaseTrainer):
                             self.model_setup.report_to_tensorboard(
                                 self.model, self.config, lr_scheduler, self.tensorboard
                             )
-
-                            accumulated_loss_cpu = accumulated_loss.item()
-                            if math.isnan(accumulated_loss_cpu):
-                                raise RuntimeError("Training loss became NaN. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
 
                             self.tensorboard.add_scalar("loss/train_step",accumulated_loss_cpu , train_progress.global_step)
                             ema_loss = ema_loss or accumulated_loss_cpu
@@ -837,6 +867,20 @@ class GenericTrainer(BaseTrainer):
 
                 if self.commands.get_stop_command():
                     return
+
+            if epoch_batch_count == 0 and epoch_started_at_step == 0:
+                # an empty epoch trains nothing, and the following ones are normally just as empty, so the run would
+                # count through its epochs without a step and end without saving
+                no_images = ("the enabled concepts have no images (check their paths, and Include Subdirectories for "
+                             "images in subfolders)")
+                if self.config.batch_size <= 1:
+                    raise RuntimeError(f"This epoch has no batches, so nothing can be trained: {no_images}.")
+                raise RuntimeError(
+                    f"This epoch has no batches, so nothing can be trained: either {no_images}, or no aspect ratio "
+                    f"bucket has {self.config.batch_size} samples (batches never mix buckets, and leftover samples are "
+                    f"skipped). Lower the batch size or add images"
+                    f"{', or turn off aspect ratio bucketing' if self.config.aspect_ratio_bucketing else ''}."
+                )
 
             train_progress.next_epoch()
             self.callbacks.on_update_train_progress(train_progress, current_epoch_length, self.config.epochs)

@@ -7,6 +7,7 @@ from modules.module.LoRAModule import LoRAModuleWrapper
 from modules.util.enum.DataType import DataType
 from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType
+from modules.util.LayerOffloadConductor import LayerOffloadConductor
 
 import torch
 import torchvision
@@ -92,6 +93,9 @@ class WuerstchenModel(BaseModel):
     prior_train_dtype: DataType
     effnet_encoder_train_dtype: DataType
 
+    prior_text_encoder_offload_conductor: LayerOffloadConductor | None
+    prior_prior_offload_conductor: LayerOffloadConductor | None
+
     # persistent embedding training data
     embedding: WuerstchenModelEmbedding | None
     additional_embeddings: list[WuerstchenModelEmbedding] | None
@@ -127,6 +131,9 @@ class WuerstchenModel(BaseModel):
 
         self.prior_train_dtype = DataType.FLOAT_32
         self.effnet_encoder_train_dtype = DataType.FLOAT_32
+
+        self.prior_text_encoder_offload_conductor = None
+        self.prior_prior_offload_conductor = None
 
         self.embedding = None
         self.additional_embeddings = []

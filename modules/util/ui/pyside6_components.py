@@ -7,6 +7,7 @@ from typing import Any, Literal
 from modules.util.enum.PathIOType import PathIOType
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.path_util import supported_image_extensions, supported_video_extensions
+from modules.util.ui.pyside6_util import file_dialog_options
 from modules.util.ui.pyside6_validation import PySide6FieldValidator, PySide6PathValidator
 from modules.util.ui.UIState import BaseUIState
 
@@ -307,7 +308,7 @@ def path_entry(
                 current_dir = str(current_path.parent)
 
         if mode == "dir":
-            chosen = QFileDialog.getExistingDirectory(frame, "", current_dir, QFileDialog.Option.ShowDirsOnly)
+            chosen = QFileDialog.getExistingDirectory(frame, "", current_dir, file_dialog_options(QFileDialog.Option.ShowDirsOnly))
         else:
             filters = ["All Files (*.*)"]
             if allow_model_files:
@@ -326,9 +327,9 @@ def path_entry(
             init_path = str(Path(current_dir) / current_filename) if current_filename else current_dir
 
             if use_save_dialog:
-                chosen, _ = QFileDialog.getSaveFileName(frame, "", init_path, filter_str)
+                chosen, _ = QFileDialog.getSaveFileName(frame, "", init_path, filter_str, options=file_dialog_options())
             else:
-                chosen, _ = QFileDialog.getOpenFileName(frame, "", init_path, filter_str)
+                chosen, _ = QFileDialog.getOpenFileName(frame, "", init_path, filter_str, options=file_dialog_options())
 
         if chosen:
             if path_modifier:

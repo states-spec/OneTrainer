@@ -22,7 +22,11 @@ class CloudTabController:
         if self.config.cloud.type == CloudType.RUNPOD:
             import runpod
             runpod.api_key = self.config.secrets.cloud.api_key
-            gpus = runpod.get_gpus()
+            try:
+                gpus = runpod.get_gpus()
+            except Exception as e:  # no or a wrong API key, or no connection
+                print(f"Could not get the GPU types from RunPod (is the API key set?): {e}")
+                return []
             return [gpu['id'] for gpu in gpus]
         return []
 

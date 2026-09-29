@@ -96,6 +96,7 @@ class BaseConfigListView(ABC):
 
             self.configs = []
             self.__load_available_config_names()
+            self.__list_config_file(getattr(self.controller.train_config, self.attr_name))
 
             self.current_config = getattr(self.controller.train_config, self.attr_name)
             self.widgets = []
@@ -103,10 +104,10 @@ class BaseConfigListView(ABC):
 
             self.__create_configs_dropdown()
             self.components.button(self.top_frame, 0, 1, "Add Config", self.__add_config, tooltip="Adds a new config, which are containers for concepts, which themselves contain your dataset", width=20, padx=5)
-            self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, tooltip=add_button_tooltip, width=30, padx=5)
+            self.add_button = self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, tooltip=add_button_tooltip, width=30, padx=5)
         else:
             self.top_frame = self._create_top_frame(master)
-            self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, width=20, padx=5)
+            self.add_button = self.components.button(self.top_frame, 0, 2, add_button_text, self.__add_element, width=20, padx=5)
 
             self.current_config = getattr(self.controller.train_config, self.attr_name)
 
@@ -213,6 +214,29 @@ class BaseConfigListView(ABC):
             name = self.default_config_name.removesuffix(".json")
             self.__create_config(name)
             self.save_current_config()
+
+    def __list_config_file(self, filename: str) -> bool:
+        # A config can name a file outside config_dir (e.g. one written for the CLI). It must be in the dropdown:
+        # otherwise the dropdown switches the config to another file while this list is still shown, and saving then
+        # writes these elements over that other file. Returns whether the dropdown needs rebuilding.
+        if not filename or any(path == filename for _, path in self.configs):
+            return False
+        for i, (name, path) in enumerate(self.configs):
+            if os.path.abspath(path) == os.path.abspath(filename):  # the same file, spelled differently
+                self.configs[i] = (name, filename)
+                return True
+        self.configs.append((os.path.splitext(os.path.basename(filename))[0], filename))
+        return True
+
+    def reload_from_config(self):
+        # after a config was loaded: show the file it names (a dropdown can't select a file it doesn't list, so the
+        # previous list stayed and was later saved over the loaded config's file)
+        if not self.from_external_file:
+            return
+        filename = getattr(self.controller.train_config, self.attr_name)
+        if self.__list_config_file(filename):
+            self.__create_configs_dropdown()
+        self.__load_current_config(filename)
 
     def __create_config(self, name: str):
         name = path_util.safe_filename(name)

@@ -1,5 +1,6 @@
 import ctypes
 import platform
+import tkinter as tk
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -19,6 +20,7 @@ from modules.ui.CtkModelTabView import CtkModelTabView
 from modules.ui.CtkProfilingWindowView import CtkProfilingWindowView
 from modules.ui.CtkSampleWindowView import CtkSampleWindowView
 from modules.ui.CtkSamplingTabView import CtkSamplingTabView
+from modules.ui.CtkSettingsTabView import CtkSettingsTabView, apply_ui_scale, apply_ui_theme
 from modules.ui.CtkTopBarView import CtkTopBarView
 from modules.ui.CtkTrainingTabView import CtkTrainingTabView
 from modules.ui.CtkVideoToolUIView import CtkVideoToolUIView
@@ -26,10 +28,12 @@ from modules.ui.LoraTabController import LoraTabController
 from modules.ui.ModelTabController import ModelTabController
 from modules.ui.ProfilingWindowController import ProfilingWindowController
 from modules.ui.SamplingTabController import SamplingTabController
+from modules.ui.SettingsTabController import SettingsTabController
 from modules.ui.TopBarController import TopBarController
 from modules.ui.TrainingTabController import TrainingTabController
 from modules.ui.TrainUIController import TrainUIController
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.UISettingsConfig import UISettingsConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui import ctk_components
@@ -37,7 +41,6 @@ from modules.util.ui.CtkUIState import CtkUIState
 from modules.util.ui.ui_utils import set_window_icon
 
 import customtkinter as ctk
-from customtkinter import AppearanceModeTracker
 
 # chunk for forcing Windows to ignore DPI scaling when moving between monitors
 # fixes the long standing transparency bug https://github.com/Nerogar/OneTrainer/issues/90
@@ -95,9 +98,16 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
 
         self.after(100, lambda: self._set_icon())
 
-        # more efficient version of ctk.set_appearance_mode("System"), which retrieves the system theme on each main loop iteration
-        ctk.set_appearance_mode("Light" if AppearanceModeTracker.detect_appearance_mode() == 0 else "Dark")
+        # UI preferences (theme, scale, window size), stored apart from the training config
+        self.ui_settings = UISettingsConfig.load()
+        self.ui_settings_state = CtkUIState(self, self.ui_settings)
+        apply_ui_theme(self.ui_settings)
+        apply_ui_scale(self.ui_settings)
         ctk.set_default_color_theme("blue")
+        if self.ui_settings.remember_window_size and self.ui_settings.window_width > 0 and self.ui_settings.window_height > 0:
+            self.geometry(f"{self.ui_settings.window_width}x{self.ui_settings.window_height}")
+        if self.ui_settings.start_maximized:
+            self.after(0, self.__maximize)
 
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
@@ -115,6 +125,7 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         self.lora_tab = None
         self.cloud_tab = None
         self.additional_embeddings_tab = None
+        self.settings_tab = None
 
         self.top_bar_component = self.top_bar(self)
         self.content_frame(self)
@@ -132,10 +143,34 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
 
     def __close(self):
         self.top_bar_component.save_default()
+        self.__save_window_size()
         self.controller._stop_always_on_tensorboard()
         if hasattr(self, 'workspace_dir_trace_id'):
             self.ui_state.remove_var_trace("workspace_dir", self.workspace_dir_trace_id)
         self.quit()
+
+    def __maximize(self):
+        try:
+            self.state("zoomed")  # Windows, macOS
+        except tk.TclError:
+            with suppress(tk.TclError):
+                self.attributes("-zoomed", True)  # X11
+
+    def __is_maximized(self) -> bool:
+        with suppress(tk.TclError):
+            if self.state() == "zoomed" or self.attributes("-zoomed"):
+                return True
+        return False
+
+    def __save_window_size(self):
+        if not self.ui_settings.remember_window_size or self.__is_maximized():
+            return
+        with suppress(ValueError):
+            # geometry() returns "WxH+X+Y" without CTk's window scaling
+            width, height = (int(v) for v in self.geometry().split("+")[0].split("x"))
+            self.ui_settings.window_width = width
+            self.ui_settings.window_height = height
+            self.ui_settings.save()
 
     # --- BaseTrainUIView abstract method implementations ---
 
@@ -263,6 +298,13 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         self.tools_tab = self.create_tools_tab(self.tabview.add("tools"))
         self.additional_embeddings_tab = self.create_additional_embeddings_tab(self.tabview.add("additional embeddings"))
         self.cloud_tab = self.create_cloud_tab(self.tabview.add("cloud"))
+        # always shown, so the LoRA settings stay reachable while another training method is selected
+        self.lora_tab = CtkLoraTabView(self.tabview.add("LoRA"), LoraTabController(self.controller.train_config), self.ui_state)
+        self.settings_tab = CtkSettingsTabView(
+            self.tabview.add("settings"),
+            SettingsTabController(self.ui_settings, apply_ui_scale, needs_restart=("theme",), supports_font_size=False),
+            self.ui_settings_state,
+        )
 
         self.change_training_method(self.controller.train_config.training_method)
         self._update_additional_embeddings_tab(self.controller.train_config.model_type)
@@ -368,19 +410,15 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.lora_tab:
             self.lora_tab.refresh_ui()
 
+        if self.tabview and "embedding" in self.tabview._tab_dict:
+            self._refresh_embedding_tab()
+
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
-        if not self.tabview:
-            return
-
-        # additional embeddings only apply to models that support embedding training
-        supported = TrainingMethod.EMBEDDING in model_type.supported_training_methods()
-        if not supported and "additional embeddings" in self.tabview._tab_dict:
-            self.tabview.delete("additional embeddings")
-            self.additional_embeddings_tab = None
-        elif supported and "additional embeddings" not in self.tabview._tab_dict:
-            self.additional_embeddings_tab = self.create_additional_embeddings_tab(self.tabview.add("additional embeddings"))
+        # always shown; it says so when the model type doesn't support embedding training
+        if self.additional_embeddings_tab:
+            self.additional_embeddings_tab.update_supported()
 
     def change_training_method(self, training_method: TrainingMethod):
         if not self.tabview:
@@ -389,16 +427,22 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
-        if training_method != TrainingMethod.LORA and "LoRA" in self.tabview._tab_dict:
-            self.tabview.delete("LoRA")
-            self.lora_tab = None
-        if training_method != TrainingMethod.EMBEDDING and "embedding" in self.tabview._tab_dict:
-            self.tabview.delete("embedding")
+        if self.lora_tab:
+            self.lora_tab.refresh_ui()
 
-        if training_method == TrainingMethod.LORA and "LoRA" not in self.tabview._tab_dict:
-            self.lora_tab = CtkLoraTabView(self.tabview.add("LoRA"), LoraTabController(self.controller.train_config), self.ui_state)
-        if training_method == TrainingMethod.EMBEDDING and "embedding" not in self.tabview._tab_dict:
-            self.embedding_tab(self.tabview.add("embedding"))
+        self._refresh_embedding_tab()
+
+    def _refresh_embedding_tab(self):
+        # always shown, like the LoRA tab. Rebuilt on changes, because its notice depends on the training method and
+        # the model type.
+        exists = "embedding" in self.tabview._tab_dict
+        was_current = exists and self.tabview.get() == "embedding"
+        index = self.tabview.index("embedding" if exists else "settings")
+        if exists:
+            self.tabview.delete("embedding")
+        self.embedding_tab(self.tabview.insert(index, "embedding"))
+        if was_current:
+            self.tabview.set("embedding")
 
     def load_preset(self):
         if not self.tabview:
@@ -406,6 +450,10 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
 
         if self.additional_embeddings_tab:
             self.additional_embeddings_tab.refresh_ui()
+        # the concept and sample files the loaded config names (at startup the tabs are built from them afterwards)
+        for tab in (getattr(self, "concepts_tab", None), getattr(self, "sampling_tab", None)):
+            if tab is not None:
+                tab.reload_from_config()
 
     def _set_training_button_style(self, mode: str):
         if not self.training_button:

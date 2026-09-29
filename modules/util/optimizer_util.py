@@ -1,3 +1,5 @@
+import copy
+
 import modules.util.multi_gpu_util as multi
 from modules.model.BaseModel import BaseModel
 from modules.util.config.TrainConfig import TrainConfig, TrainOptimizerConfig
@@ -9,12 +11,49 @@ from modules.util.torch_util import optimizer_to_device_
 import torch
 
 
-def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
-    optimizer = train_config.optimizer.optimizer
-
+def default_optimizer_config(optimizer: Optimizer) -> TrainOptimizerConfig:
+    # the settings an optimizer starts from when it is selected in the UI
     optimizer_config = TrainOptimizerConfig.default_values()
     optimizer_config.from_dict(OPTIMIZER_DEFAULT_PARAMETERS[optimizer])
     optimizer_config.optimizer = optimizer
+    return optimizer_config
+
+
+# settings that create_optimizer passes on as None, where None is a choice rather than "use the default"
+# (e.g. eps=None enables Adam-atan2 in prodigy-plus-schedule-free)
+_NONE_IS_A_SETTING = {
+    Optimizer.PRODIGY: {"beta3"},
+    Optimizer.PRODIGY_PLUS_SCHEDULE_FREE: {"beta3", "eps"},
+    Optimizer.PRODIGY_ADV: {"beta3"},
+    Optimizer.ADAFACTOR: {"beta1"},
+}
+
+
+def adv_state_precisions(optimizer: Optimizer) -> list[str]:
+    # the adv_optm state_precision modes that train with this optimizer. In adv_optm 2.5.13 "fp16" fails in every
+    # optimizer except Adopt_adv (a dtype error, or NaN in Prodigy_adv), and "factored" always fails in AdaMuon_adv
+    precisions = ["auto", "fp32", "factored", "bf16_sr", "int8_sr"]
+    if optimizer == Optimizer.ADOPT_ADV:
+        precisions.append("fp16")
+    if optimizer == Optimizer.ADAMUON_ADV:
+        precisions.remove("factored")
+    return precisions
+
+
+def fill_unset_optimizer_settings(optimizer_config: TrainOptimizerConfig) -> TrainOptimizerConfig:
+    # a copy where every unset (None) setting of the optimizer's defaults is replaced by the default the UI starts from
+    optimizer = optimizer_config.optimizer
+    filled_config = copy.deepcopy(optimizer_config)
+    for key, value in OPTIMIZER_DEFAULT_PARAMETERS[optimizer].items():
+        if getattr(filled_config, key, None) is None and key not in _NONE_IS_A_SETTING.get(optimizer, set()):
+            setattr(filled_config, key, value)
+    return filled_config
+
+
+def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
+    optimizer = train_config.optimizer.optimizer
+
+    optimizer_config = default_optimizer_config(optimizer)
 
     if str(optimizer) in train_config.optimizer_defaults:
         saved_optimizer_config = train_config.optimizer_defaults[str(optimizer)]
@@ -26,9 +65,7 @@ def change_optimizer(train_config: TrainConfig) -> TrainOptimizerConfig:
 def load_optimizer_defaults(train_config: TrainConfig) -> TrainOptimizerConfig:
     optimizer = train_config.optimizer.optimizer
 
-    optimizer_config = TrainOptimizerConfig.default_values()
-    optimizer_config.from_dict(OPTIMIZER_DEFAULT_PARAMETERS[optimizer])
-    optimizer_config.optimizer = optimizer
+    optimizer_config = default_optimizer_config(optimizer)
 
     if str(optimizer) in train_config.optimizer_defaults:
         train_config.optimizer_defaults.pop(str(optimizer))
@@ -133,8 +170,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "beta2": 0.999,
         "eps": 1e-8,
         "weight_decay": 0,
-        "amsgrad": False,
-        "optim_bits": 32,
         "min_8bit_size": 4096,
         "percentile_clipping": 100,
         "block_wise": True,
@@ -145,8 +180,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "beta2": 0.999,
         "eps": 1e-8,
         "weight_decay": 1e-2,
-        "amsgrad": False,
-        "optim_bits": 32,
         "min_8bit_size": 4096,
         "percentile_clipping": 100,
         "block_wise": True,
@@ -221,7 +254,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "max_unorm": 1.0,
     },
     Optimizer.LARS: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -231,7 +264,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "max_unorm": 0.02,
     },
     Optimizer.LARS_8BIT: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -270,7 +303,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "block_wise": True,
     },
     Optimizer.SGD_8BIT: {
-        "momentum": 0,
+        "momentum": 0.9,
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
@@ -288,7 +321,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "foreach": False,
     },
     Optimizer.SCHEDULE_FREE_SGD: {
-        "momentum": 0,
+        "momentum": 0.9,
         "weight_decay": 1e-2,
         "r": 0.0,
         "weight_lr_power": 2.0,
@@ -340,7 +373,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "momentum": 0,
         "log_every": 0,
         "weight_decay": 0.0,
-        "eps": 0.0,
+        "eps": 1e-6,
         "d0": 1e-6,
         "growth_rate": float('inf'),
     },
@@ -455,15 +488,20 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "eps": 1e-8,
         "cautious_wd": False,
         "weight_decay": 0.0,
-        "nnmf_factor": False,
+        "fisher_wd": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
         "use_atan2": False,
-        "orthogonal_gradient": False,
-        "use_AdEMAMix": False,
-        "beta3_ema": 0.9999,
-        "alpha": 5,
+        "orthogonal_gradient": "disabled",
+        "nesterov": False,
+        "nesterov_coef": None,
+        "normed_momentum": False,
+        "spectral_normalization": False,
         "kourkoutas_beta": False,
     },
     Optimizer.ADOPT_ADV: {
@@ -472,17 +510,19 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "eps": 1e-6,
         "cautious_wd": False,
         "weight_decay": 0.0,
-        "nnmf_factor": False,
+        "fisher_wd": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
         "use_atan2": True,
-        "orthogonal_gradient": False,
-        "use_AdEMAMix": False,
-        "beta3_ema": 0.9999,
-        "alpha": 5,
-        "Simplified_AdEMAMix": False,
-        "alpha_grad": 100.0,
+        "orthogonal_gradient": "disabled",
+        "nesterov": False,
+        "nesterov_coef": None,
+        "spectral_normalization": False,
         "kourkoutas_beta": False,
     },
     Optimizer.PRODIGY_ADV: {
@@ -492,7 +532,11 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "eps": 1e-8,
         "cautious_wd": False,
         "weight_decay": 0.0,
-        "nnmf_factor": False,
+        "fisher_wd": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -503,49 +547,79 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "prodigy_steps": 0,
         "d_limiter": False,
         "use_atan2": False,
-        "orthogonal_gradient": False,
-        "use_AdEMAMix": False,
-        "beta3_ema": 0.9999,
-        "alpha": 5,
-        "Simplified_AdEMAMix": False,
-        "alpha_grad": 100.0,
+        "orthogonal_gradient": "disabled",
+        "nesterov": False,
+        "nesterov_coef": None,
+        "spectral_normalization": False,
         "kourkoutas_beta": False,
     },
     Optimizer.SIGNSGD_ADV: {
         "momentum": 0.95,
         "cautious_wd": False,
         "weight_decay": 0.0,
-        "nnmf_factor": False,
+        "geometric_wd": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
-        "orthogonal_gradient": False,
-        "Simplified_AdEMAMix": False,
-        "alpha_grad": 100.0,
+        "orthogonal_gradient": "disabled",
+        "nesterov": False,
+        "nesterov_coef": None,
+        "normed_momentum": False,
+        "snr_cond": False,
+        "stochastic_sign": False,
+        "spectral_normalization": False,
+    },
+    Optimizer.SINKSGD_ADV: {
+        "momentum": 0.0,
+        "cautious_wd": False,
+        "weight_decay": 0.0,
+        "geometric_wd": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
+        "stochastic_rounding": True,
+        "compile": False,
+        "fused_back_pass": False,
+        "sinkhorn_iterations": 5,
+        "orthogonal_sinkhorn": False,
+        "orthogonal_gradient": "disabled",
+        "nesterov": False,
+        "nesterov_coef": None,
+        "normed_momentum": False,
+        "snr_cond": False,
+        "spectral_normalization": False,
     },
     Optimizer.LION_ADV: {
         "beta1": 0.9,
         "beta2": 0.99,
         "cautious_wd": False,
         "weight_decay": 0.0,
-        "clip_threshold": None,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
         "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
-        "orthogonal_gradient": False,
+        "orthogonal_gradient": "disabled",
         "auto_kappa_p": True,
+        "stochastic_sign": False,
+        "spectral_normalization": False,
     },
     Optimizer.MUON_ADV: {
         "beta1": 0.9,
         "cautious_wd": False,
         "weight_decay": 0.0,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
         "accelerated_ns": False,
         "ns_steps": 5,
         "low_rank_ortho": False,
         "ortho_rank": 128,
         "rms_rescaling": True,
-        "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -556,12 +630,12 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "muon_te1_adam_lr": None,
         "muon_te2_adam_lr": None,
         "nesterov": True,
-        "Simplified_AdEMAMix": False,
-        "alpha_grad": 100.0,
+        "nesterov_coef": None,
         "normuon_variant": True,
         "beta2_normuon": 0.95,
-        "orthogonal_gradient": False,
+        "orthogonal_gradient": "disabled",
         "approx_mars": False,
+        "spectral_normalization": False,
         "muon_adam_config": {},
     },
     Optimizer.ADAMUON_ADV: {
@@ -570,12 +644,15 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "eps": 1e-8,
         "cautious_wd": False,
         "weight_decay": 0.0,
+        "centered_wd": 0.0,
+        "centered_wd_mode": "float8",
+        "state_precision": "auto",
+        "factored_2nd": False,
         "accelerated_ns": False,
         "ns_steps": 5,
         "low_rank_ortho": False,
         "ortho_rank": 128,
         "rms_rescaling": True,
-        "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -586,12 +663,12 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "muon_te1_adam_lr": None,
         "muon_te2_adam_lr": None,
         "nesterov": False,
+        "nesterov_coef": None,
         "use_atan2": False,
-        "Simplified_AdEMAMix": False,
-        "alpha_grad": 100.0,
         "normuon_variant": True,
-        "orthogonal_gradient": False,
+        "orthogonal_gradient": "disabled",
         "approx_mars": False,
+        "spectral_normalization": False,
         "muon_adam_config": {},
     },
     Optimizer.ADABELIEF: {

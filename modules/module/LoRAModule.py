@@ -273,6 +273,30 @@ class LoHaModule(PeftBase):
         assert self.hada_w2_a is not None
         assert self.hada_w2_b is not None
 
+    # LyCORIS and ComfyUI store non-Tucker LoHa factors as 2D matrices (w_a: [out, rank], w_b: [rank, in*kh*kw]).
+    # The conv-shaped parameters are flattened to that layout on save and reshaped back on load, so both the
+    # 2D layout and older 4D OneTrainer files load.
+    _HADA_KEYS = ("hada_w1_a", "hada_w1_b", "hada_w2_a", "hada_w2_b")
+
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        super()._save_to_state_dict(destination, prefix, keep_vars)
+        if not keep_vars:
+            for name in self._HADA_KEYS:
+                tensor = destination.get(prefix + name)
+                if tensor is not None and tensor.dim() > 2:
+                    destination[prefix + name] = tensor.reshape(tensor.shape[0], -1)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+                              error_msgs):
+        for name in self._HADA_KEYS:
+            param = getattr(self, name)
+            tensor = state_dict.get(prefix + name)
+            if param is not None and tensor is not None \
+                    and tensor.shape != param.shape and tensor.numel() == param.numel():
+                state_dict[prefix + name] = tensor.reshape(param.shape)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys,
+                                      error_msgs)
+
     def forward(self, x, *args, **kwargs):
         self.check_initialized()
         return self.orig_forward(x) + self.delta_forward(x, *args, **kwargs)

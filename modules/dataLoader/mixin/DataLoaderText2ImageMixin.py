@@ -4,6 +4,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Callable
 
 import modules.util.multi_gpu_util as multi
+from modules.dataLoader.pipelineModules.CheckFinite import CheckFinite
 from modules.model.BaseModel import BaseModel
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
@@ -354,12 +355,17 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         modules = []
 
         if config.latent_caching:
+            # a NaN/inf value would be cached and then break training much later, so stop at the sample that has it
+            if image_split_names:
+                modules.append(CheckFinite(names=image_split_names))
             modules.append(image_disk_cache)
 
             sort_names = [x for x in sort_names if x not in image_aggregate_names]
             sort_names = [x for x in sort_names if x not in image_split_names]
 
             if text_caching:
+                if text_split_names:
+                    modules.append(CheckFinite(names=text_split_names))
                 modules.append(text_disk_cache)
                 sort_names = [x for x in sort_names if x not in text_split_names]
 

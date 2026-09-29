@@ -42,6 +42,7 @@ class Optimizer(Enum):
     SGD = 'SGD'
     SGD_8BIT = 'SGD_8BIT'
     SIGNSGD_ADV = 'SIGNSGD_ADV'
+    SINKSGD_ADV = 'SINKSGD_ADV'
 
     # Schedule-free optimizers
     SCHEDULE_FREE_ADAMW = 'SCHEDULE_FREE_ADAMW'
@@ -98,6 +99,20 @@ class Optimizer(Enum):
             self.PRODIGY_PLUS_SCHEDULE_FREE,
         ]
 
+    @property
+    def is_adv_optm(self):
+        # optimizers from the adv_optm package, whose saved state is tied to its version
+        return self in [
+            Optimizer.ADAMW_ADV,
+            Optimizer.ADOPT_ADV,
+            Optimizer.PRODIGY_ADV,
+            Optimizer.LION_ADV,
+            Optimizer.MUON_ADV,
+            Optimizer.ADAMUON_ADV,
+            Optimizer.SIGNSGD_ADV,
+            Optimizer.SINKSGD_ADV,
+        ]
+
     def supports_fused_back_pass(self):
         return self in [
             Optimizer.ADAFACTOR,
@@ -113,6 +128,7 @@ class Optimizer(Enum):
             Optimizer.MUON_ADV,
             Optimizer.ADAMUON_ADV,
             Optimizer.SIGNSGD_ADV,
+            Optimizer.SINKSGD_ADV,
         ]
 
     # Small helper for adjusting learning rates to adaptive optimizers.

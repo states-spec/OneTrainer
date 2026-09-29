@@ -110,15 +110,24 @@ class TrainOptimizerConfig(BaseConfig):
     use_schedulefree: True
     use_orthograd: False
     nnmf_factor: False
-    orthogonal_gradient: False
+    orthogonal_gradient: str
     use_atan2: False
-    use_AdEMAMix: False
-    beta3_ema: float
-    alpha_grad: float
     beta1_warmup: int
     min_beta1: float
-    Simplified_AdEMAMix: False
     kourkoutas_beta: False
+    nesterov_coef: float
+    normed_momentum: False
+    state_precision: str
+    factored_2nd: False
+    fisher_wd: False
+    spectral_normalization: False
+    centered_wd: float
+    centered_wd_mode: str
+    stochastic_sign: False
+    geometric_wd: False
+    snr_cond: False
+    sinkhorn_iterations: int
+    orthogonal_sinkhorn: False
     schedulefree_c: float
     ns_steps: int
     MuonWithAuxAdam: False
@@ -223,15 +232,24 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("use_schedulefree", True, bool, True))
         data.append(("use_orthograd", False, bool, False))
         data.append(("nnmf_factor", False, bool, False))
-        data.append(("orthogonal_gradient", False, bool, False))
+        data.append(("orthogonal_gradient", "disabled", str, False))  # adv_optm OrthoGrad mode: disabled, flattened, iterative
         data.append(("use_atan2", False, bool, False))
-        data.append(("use_AdEMAMix", False, bool, False))
-        data.append(("beta3_ema", None, float, True))
-        data.append(("alpha_grad", None, float, True))
         data.append(("beta1_warmup", None, int, True))
         data.append(("min_beta1", None, float, True))
-        data.append(("Simplified_AdEMAMix", False, bool, False))
         data.append(("kourkoutas_beta", False, bool, False))
+        data.append(("nesterov_coef", None, float, True))  # None = beta1
+        data.append(("normed_momentum", False, bool, False))
+        data.append(("state_precision", "auto", str, False))  # auto, fp32, factored, bf16_sr, fp16, int8_sr
+        data.append(("factored_2nd", False, bool, False))
+        data.append(("fisher_wd", False, bool, False))
+        data.append(("spectral_normalization", False, bool, False))
+        data.append(("centered_wd", None, float, True))
+        data.append(("centered_wd_mode", "float8", str, False))  # full, float8, int8, int4
+        data.append(("stochastic_sign", False, bool, False))
+        data.append(("geometric_wd", False, bool, False))
+        data.append(("snr_cond", False, bool, False))
+        data.append(("sinkhorn_iterations", None, int, True))
+        data.append(("orthogonal_sinkhorn", False, bool, False))
         data.append(("schedulefree_c", None, float, True))
         data.append(("ns_steps", None, int, True))
         data.append(("MuonWithAuxAdam", False, bool, False))
@@ -593,7 +611,7 @@ class TrainConfig(BaseConfig):
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(
             data,
-            config_version=11,
+            config_version=12,
             config_migrations={
                 0: self.__migration_0,
                 1: self.__migration_1,
@@ -606,6 +624,7 @@ class TrainConfig(BaseConfig):
                 8: self.__migration_8,
                 9: self.__migration_9,
                 10: self.__migration_10,
+                11: self.__migration_11,
             }
         )
 
@@ -862,6 +881,30 @@ class TrainConfig(BaseConfig):
                 migrated_data["output_model_format"] = "LEGACY_LORA"
             elif training_method != "EMBEDDING":
                 migrated_data["output_model_format"] = "LEGACY_SAFETENSORS"
+
+        return migrated_data
+
+    def __migration_11(self, data: dict) -> dict:
+        migrated_data = data.copy()
+
+        # adv_optm 2.5: OrthoGrad became a mode ("disabled", "flattened" = the former OrthoGrad, "iterative"), and the
+        # factored state (nnmf_factor) became state_precision="factored". The AdEMAMix options were removed in favor of
+        # Nesterov momentum, so their keys are dropped. Lion_adv has no state_precision and keeps nnmf_factor.
+        def migrate_optimizer(optimizer: dict):
+            if not isinstance(optimizer, dict):
+                return
+            if isinstance(optimizer.get("orthogonal_gradient"), bool):
+                optimizer["orthogonal_gradient"] = "flattened" if optimizer["orthogonal_gradient"] else "disabled"
+            if optimizer.get("nnmf_factor") is True and optimizer.get("optimizer") != "LION_ADV":
+                optimizer["nnmf_factor"] = False
+                optimizer["state_precision"] = "factored"
+            for key in ("use_AdEMAMix", "beta3_ema", "alpha_grad", "Simplified_AdEMAMix"):
+                optimizer.pop(key, None)
+            migrate_optimizer(optimizer.get("muon_adam_config"))
+
+        migrate_optimizer(migrated_data.get("optimizer"))
+        for optimizer in (migrated_data.get("optimizer_defaults") or {}).values():
+            migrate_optimizer(optimizer)
 
         return migrated_data
 

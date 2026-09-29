@@ -11,7 +11,10 @@ from modules.modelSetup.mixin.ModelSetupEmbeddingMixin import ModelSetupEmbeddin
 from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
-from modules.util.checkpointing_util import enable_checkpointing_for_clip_encoder_layers
+from modules.util.checkpointing_util import (
+    enable_checkpointing_for_clip_encoder_layers,
+    enable_checkpointing_for_wuerstchen_prior,
+)
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.conv_util import apply_circular_padding_to_conv2d
 from modules.util.dtype_util import (
@@ -58,7 +61,10 @@ class BaseWuerstchenSetup(
         # (stable-cascade prior fp16-disable, effnet bf16-on-fp16).
         if config.prior.checkpointing_enabled():
             model.prior_prior.enable_gradient_checkpointing()
-        enable_checkpointing_for_clip_encoder_layers(model.prior_text_encoder, config, config.text_encoder)
+        if config.prior.offloading_enabled():
+            model.prior_prior_offload_conductor = enable_checkpointing_for_wuerstchen_prior(model.prior_prior, config, config.prior)
+        model.prior_text_encoder_offload_conductor = \
+            enable_checkpointing_for_clip_encoder_layers(model.prior_text_encoder, config, config.text_encoder)
 
         if config.force_circular_padding:
             apply_circular_padding_to_conv2d(model.decoder_vqgan)

@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,21 +19,24 @@ from modules.ui.PySide6ModelTabView import PySide6ModelTabView
 from modules.ui.PySide6ProfilingWindowView import PySide6ProfilingWindowView
 from modules.ui.PySide6SampleWindowView import PySide6SampleWindowView
 from modules.ui.PySide6SamplingTabView import PySide6SamplingTabView
+from modules.ui.PySide6SettingsTabView import PySide6SettingsTabView
 from modules.ui.PySide6TopBarView import PySide6TopBarView
 from modules.ui.PySide6TrainingTabView import PySide6TrainingTabView
 from modules.ui.PySide6VideoToolUIView import PySide6VideoToolUIView
 from modules.ui.SamplingTabController import SamplingTabController
+from modules.ui.SettingsTabController import SettingsTabController
 from modules.ui.TopBarController import TopBarController
 from modules.ui.TrainingTabController import TrainingTabController
 from modules.ui.TrainUIController import TrainUIController
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.UISettingsConfig import UISettingsConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui import pyside6_components
-from modules.util.ui.pyside6_util import QtABCMeta
+from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings, file_dialog_options
 from modules.util.ui.PySide6UIState import PySide6UIState
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFileDialog, QGridLayout, QMainWindow, QMessageBox, QTabWidget, QWidget
 
@@ -51,6 +55,14 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.setWindowTitle("OneTrainer")
         self.setWindowIcon(QIcon("resources/icons/icon.png"))
         self.resize(1100, 740)
+
+        # UI preferences (theme, scale, window size), stored apart from the training config
+        self.ui_settings = UISettingsConfig.load()
+        self.ui_settings_state = PySide6UIState(self.ui_settings)
+        if self.ui_settings.remember_window_size and self.ui_settings.window_width > 0 and self.ui_settings.window_height > 0:
+            self.resize(self.ui_settings.window_width, self.ui_settings.window_height)
+        if self.ui_settings.start_maximized:
+            self.setWindowState(Qt.WindowState.WindowMaximized)
 
         self.status_label = None
         self.eta_label = None
@@ -106,9 +118,18 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             event.ignore()
             return
         self.top_bar_component.save_default()
+        self.__save_window_size()
         self.controller._stop_always_on_tensorboard()
         self.ui_state.remove_var_trace("workspace_dir", self.workspace_dir_trace_id)
         event.accept()
+
+    def __save_window_size(self):
+        if not self.ui_settings.remember_window_size:
+            return
+        size = self.normalGeometry().size() if self.isMaximized() or self.isFullScreen() else self.size()
+        self.ui_settings.window_width = size.width()
+        self.ui_settings.window_height = size.height()
+        self.ui_settings.save()
 
     # --- BaseTrainUIView abstract method implementations ---
 
@@ -295,6 +316,22 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.tabview.addTab(self.cloud_tab, "cloud")
         self._tab_widgets["cloud"] = self.cloud_tab
 
+        # always shown, so the LoRA settings stay reachable while another training method is selected
+        self.lora_tab = PySide6LoraTabView(None, LoraTabController(self.controller.train_config), self.ui_state)
+        self.tabview.addTab(self.lora_tab, "LoRA")
+        self._tab_widgets["LoRA"] = self.lora_tab
+
+        self._refresh_embedding_tab()
+
+        self.settings_tab = PySide6SettingsTabView(
+            None,
+            SettingsTabController(self.ui_settings, apply_ui_settings, needs_restart=("ui_scale",), supports_font_size=True,
+                                  supports_system_file_dialogs=sys.platform.startswith("linux")),
+            self.ui_settings_state,
+        )
+        self.tabview.addTab(self.settings_tab, "settings")
+        self._tab_widgets["settings"] = self.settings_tab
+
     def create_sampling_tab(self):
         tab_page = QWidget()
         tab_lo = QGridLayout(tab_page)
@@ -334,14 +371,14 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             self.training_tab.refresh_ui()
         if self.lora_tab:
             self.lora_tab.refresh_ui()
+        if 'embedding' in self._tab_widgets:
+            self._refresh_embedding_tab()
         self._update_additional_embeddings_tab(model_type)
 
     def _update_additional_embeddings_tab(self, model_type: ModelType):
-        # additional embeddings only apply to models that support embedding training
-        supported = TrainingMethod.EMBEDDING in model_type.supported_training_methods()
-        page = self._tab_widgets.get("additional embeddings")
-        if page is not None:
-            self.tabview.setTabVisible(self.tabview.indexOf(page), supported)
+        # always shown; it says so when the model type doesn't support embedding training
+        if self.additional_embeddings_tab:
+            self.additional_embeddings_tab.update_supported()
 
     def change_training_method(self, training_method: TrainingMethod):
         if not self.tabview:
@@ -350,26 +387,37 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
-        if training_method != TrainingMethod.LORA and 'LoRA' in self._tab_widgets:
-            self.tabview.removeTab(self.tabview.indexOf(self._tab_widgets['LoRA']))
-            del self._tab_widgets['LoRA']
-            self.lora_tab = None
-        if training_method != TrainingMethod.EMBEDDING and 'embedding' in self._tab_widgets:
-            self.tabview.removeTab(self.tabview.indexOf(self._tab_widgets['embedding']))
-            del self._tab_widgets['embedding']
+        if self.lora_tab:
+            self.lora_tab.refresh_ui()
+        if 'embedding' in self._tab_widgets:
+            self._refresh_embedding_tab()
 
-        if training_method == TrainingMethod.LORA and 'LoRA' not in self._tab_widgets:
-            self.lora_tab = PySide6LoraTabView(None, LoraTabController(self.controller.train_config), self.ui_state)
-            self.tabview.addTab(self.lora_tab, 'LoRA')
-            self._tab_widgets['LoRA'] = self.lora_tab
-        if training_method == TrainingMethod.EMBEDDING and 'embedding' not in self._tab_widgets:
-            tab_page = self._create_scrollable_tab(self._configure_embedding_frame)
-            self.tabview.addTab(tab_page, 'embedding')
-            self._tab_widgets['embedding'] = tab_page
+    def _refresh_embedding_tab(self):
+        # always shown, like the LoRA tab. Rebuilt on changes, because its notice depends on the training method and
+        # the model type.
+        page = self._create_scrollable_tab(self._configure_embedding_frame)
+        old = self._tab_widgets.get('embedding')
+        if old is None:
+            settings = self._tab_widgets.get('settings')
+            self.tabview.insertTab(self.tabview.indexOf(settings) if settings is not None else self.tabview.count(),
+                                   page, 'embedding')
+        else:
+            index = self.tabview.indexOf(old)
+            was_current = self.tabview.currentIndex() == index
+            self.tabview.removeTab(index)
+            old.deleteLater()
+            self.tabview.insertTab(index, page, 'embedding')
+            if was_current:
+                self.tabview.setCurrentIndex(index)
+        self._tab_widgets['embedding'] = page
 
     def load_preset(self):
         if self.additional_embeddings_tab:
             self.additional_embeddings_tab.refresh_ui()
+        # the concept and sample files the loaded config names (at startup the tabs are built from them afterwards)
+        for tab in (getattr(self, "concepts_tab", None), getattr(self, "sampling_tab", None)):
+            if tab is not None:
+                tab.reload_from_config()
 
     def _set_training_button_style(self, mode: str):
         if not self.training_button:
@@ -390,13 +438,13 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
     def export_training(self):
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Export Training Config", "config.json",
-            "JSON Files (*.json);;All Files (*.*)"
+            "JSON Files (*.json);;All Files (*.*)", options=file_dialog_options(),
         )
         if file_path:
             self.controller.export_training(file_path)
 
     def generate_debug_package(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Save Debug Package", ".")
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Save Debug Package", ".", file_dialog_options(QFileDialog.Option.ShowDirsOnly))
         if not dir_path:
             return
         self.controller.generate_debug_package(Path(dir_path) / "OneTrainer_debug_report.zip")

@@ -13,16 +13,28 @@ from modules.util.optimizer_util import (
 class OptimizerParamsWindowController:
     def __init__(self, config: TrainConfig):
         self.config = config
+        self._loading = False
 
     def restore_optimizer_config(self, ui_state):
         optimizer_config = change_optimizer(self.config)
-        ui_state.get_var("optimizer").update(optimizer_config)
+        self._load_into_ui(ui_state, optimizer_config)
 
     def load_defaults(self, ui_state):
         optimizer_config = load_optimizer_defaults(self.config)
-        ui_state.get_var("optimizer").update(optimizer_config)
+        self._load_into_ui(ui_state, optimizer_config)
+
+    def _load_into_ui(self, ui_state, optimizer_config: TrainOptimizerConfig):
+        # the settings are written one at a time, and every write runs the widgets' commands, which call on_close:
+        # saving then would store a mix of the old and the new optimizer's settings as the new one's defaults
+        self._loading = True
+        try:
+            ui_state.get_var("optimizer").update(optimizer_config)
+        finally:
+            self._loading = False
 
     def on_close(self):
+        if self._loading:
+            return
         update_optimizer_config(self.config)
 
     def prepare_muon_adam_config(self) -> tuple['TrainOptimizerConfig', Optimizer]:

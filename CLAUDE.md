@@ -172,6 +172,12 @@ modules/trainer/GenericTrainer.py
 - Activation offloading swaps the listed block input's storage in place (`tensor.data = ...`), so it is only safe for inputs that nothing outside the checkpointed block saves for backward.
 - Offloading needs `gradient_checkpointing` (use_reentrant=True recompute drives `before_layer`/`after_layer` in backward). Only `nn.Linear`/`Conv2d` weights+bias (and SVD/NF4 parts) are offloaded (`quantization_util.get_offload_tensors`).
 - Test offloading on CPU by driving the real conductor with `train_device="cpu"`, `temp_device="cpu:1"` (different to `device_equals`, same memory).
+- `materialize()` copies each layer's offloadable tensors straight into the static cache of the device the layer starts on and moves only the rest of the layer to the train device (`__layer_to_device`); it used to move every layer whole to the train device first (offloaded ones there and back).
+
+**GPU memory**
+- `BaseModel.materialize/evict/materialize_only` is the only way parts reach the train device, and `materialize_only` evicts before it loads, so two large parts (e.g. Chroma's 17.8 GB bf16 transformer and 9.5 GB T5) are never resident together. Sampling, caching and backups only swap between optimizer steps, after `zero_grad(set_to_none=True)`.
+- `OT_LOG_VRAM=true` prints tensor/reserved/free GPU memory after every load and unload; an OOM while loading a part prints which part and the same numbers (`torch_util.vram_summary`).
+- `OT_EXPANDABLE_SEGMENTS=true` (launcher) adds `expandable_segments:True` to `PYTORCH_CUDA_ALLOC_CONF`, merged with `OT_CUDA_LOWMEM_MODE`'s settings: PyTorch reads only the first of `PYTORCH_CUDA_ALLOC_CONF`, `PYTORCH_HIP_ALLOC_CONF`, `PYTORCH_ALLOC_CONF`. Off by default, because the allocator has no fallback when the device lacks virtual memory support (every allocation then fails); untested on gfx1100.
 
 **EMA / saving**
 - Intermediate saves and the final model contain **EMA weights** when EMA is on (`GenericTrainer.__save`, `end`). Backups keep raw weights plus EMA state.

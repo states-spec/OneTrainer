@@ -11,13 +11,13 @@ class BaseMuonAdamWindowView:
         # @formatter:off
         KEY_DETAIL_MAP = {
             'alpha': {'title': 'Alpha', 'tooltip': 'Smoothing parameter for RMSprop and others.', 'type': 'float'},
-            'beta1': {'title': 'Beta1', 'tooltip': 'optimizer_momentum term.', 'type': 'float'},
+            'beta1': {'title': 'Beta1', 'tooltip': 'Momentum term.', 'type': 'float'},
             'beta2': {'title': 'Beta2', 'tooltip': 'Coefficients for computing running averages of gradient.', 'type': 'float'},
             'eps': {'title': 'EPS', 'tooltip': 'A small value to prevent division by zero.', 'type': 'float'},
             'stochastic_rounding': {'title': 'Stochastic Rounding', 'tooltip': 'Stochastic rounding for weight updates. Improves quality when using bfloat16 weights.', 'type': 'bool'},
             'use_bias_correction': {'title': 'Bias Correction', 'tooltip': 'Turn on Adam\'s bias correction.', 'type': 'bool'},
             'weight_decay': {'title': 'Weight Decay', 'tooltip': 'Regularization to prevent overfitting.', 'type': 'float'},
-            'use_orthograd': {'title': 'use_orthograd', 'tooltip': 'Use orthograd method', 'type': 'bool'},
+            'use_orthograd': {'title': 'OrthoGrad', 'tooltip': 'Experimental. OrthoGrad (arXiv 2501.04697): update with only the gradient component orthogonal to the weights. Can reduce overfitting.', 'type': 'bool'},
             'nnmf_factor': {'title': 'Factored Optimizer', 'tooltip': 'Enables a memory-efficient mode by applying fast low-rank factorization to the optimizers states. It combines factorization for magnitudes with 1-bit compression for signs, drastically reducing VRAM usage and allowing for larger models or batch sizes. This is an approximation which may slightly alter training dynamics.', 'type': 'bool'},
             'nesterov': {'title': 'Nesterov', 'tooltip': 'Whether to use Nesterov momentum. Its mixing is set by Nesterov Coefficient.', 'type': 'bool'},
             'nesterov_coef': {'title': 'Nesterov Coefficient', 'tooltip': 'Mixing coefficient of the Nesterov update: coef * momentum + (1 - coef) * gradient. Empty uses Beta1 (or the momentum value). Lower values weight the current gradient more; this replaces the former Simplified AdEMAMix "Grad α". Only used when Nesterov is on and Beta1/momentum is above 0.', 'type': 'float'},

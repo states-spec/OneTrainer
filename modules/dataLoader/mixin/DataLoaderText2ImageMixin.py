@@ -397,7 +397,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
                     smallest = next(t for t in range(target, 8 * quantization) if all(
                         round(min(h, w) / math.sqrt(h * w) * t / quantization) >= 1
                         for h, w in AspectBucketing.all_possible_input_aspects))
-                    return f"at {target} px its narrowest aspect bucket (1:4) rounds to 0 px. The smallest resolution is {smallest}"
+                    return f"at {target} px the narrowest aspect bucket (1:4) rounds to 0 px. The smallest resolution is {smallest}"
         return None
 
     def _check_bucket_resolutions(self, config: TrainConfig, quantization: int):
@@ -411,8 +411,8 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         for where, resolutions in checks:
             error = self._bucket_resolution_error(resolutions, quantization)
             if error is not None:
-                raise ValueError(f"{where} {resolutions!r} is too small for {config.model_type}, whose images are bucketed "
-                                 f"in multiples of {quantization} px: {error}.")
+                raise ValueError(f"{where} {resolutions!r} is too small. Images are bucketed in multiples of "
+                                 f"{quantization} px, and {error}.")
 
     def _create_dataset(
             self,

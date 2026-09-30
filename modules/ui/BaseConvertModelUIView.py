@@ -40,8 +40,8 @@ class BaseConvertModelUIView:
         ], ui_state, "model_type", command=on_model_or_method_change)
 
         # training method
-        self.components.label(frame, 1, 0, "Model Type",
-                         tooltip="The type of model to convert")
+        self.components.label(frame, 1, 0, "Input Type",
+                         tooltip="Whether the input is a base model, a LoRA or an embedding")
         self.components.options_kv(frame, 1, 1, [
             ("Base Model", TrainingMethod.FINE_TUNE),
             ("LoRA", TrainingMethod.LORA),
@@ -65,22 +65,22 @@ class BaseConvertModelUIView:
             ("bfloat16", DataType.BFLOAT_16),
         ], ui_state, "output_dtype")
 
-        # row 4 (output format) is built by build_dynamic_content -- it depends on model type / training
-        # method, so the view rebuilds it via on_model_or_method_change whenever either one changes.
+        # rows 4-5 (base model name, output format) are built by build_dynamic_content -- they depend on model
+        # type / training method, so the view rebuilds them via on_model_or_method_change whenever either one
+        # changes. They go into this grid, not a frame of their own, so their columns line up with the rows above.
 
         # output model destination
-        self.components.label(frame, 5, 0, "Model Output Destination",
+        self.components.label(frame, 6, 0, "Model Output Destination",
                          tooltip="Filename or directory where the output model is saved")
         self.components.path_entry(
-            frame, 5, 1, ui_state, "output_model_destination",
+            frame, 6, 1, ui_state, "output_model_destination",
             mode="file",
             io_type=PathIOType.MODEL,
         )
 
-        self.button = self.components.button(frame, 6, 1, "Convert", controller.convert_model)
+        self.button = self.components.button(frame, 7, 1, "Convert", controller.convert_model)
 
-    def build_dynamic_content(self, frame, controller, ui_state):
-        row = 0
+    def build_dynamic_content(self, frame, controller, ui_state, row=4):
 
         # base model name -- LoRA/embedding conversion needs to load the base model to know its native
         # module names (used to reverse KOHYA/LEGACY un-flattening); a fine-tune conversion's "Input name"

@@ -14,7 +14,7 @@ class CtkConvertModelUIView(BaseConvertModelUIView, ctk.CTkToplevel):
 
         self.controller = controller
         self.ui_state = CtkUIState(self, controller.convert_model_args)
-        self._dynamic_frame = None
+        self._dynamic_widgets = []
 
         self.title("Convert models")
         self.geometry("550x350")
@@ -34,15 +34,12 @@ class CtkConvertModelUIView(BaseConvertModelUIView, ctk.CTkToplevel):
         self.after(200, lambda: set_window_icon(self))
 
     def _rebuild_dynamic_ui(self, *args):
-        if self._dynamic_frame is not None:
-            self._dynamic_frame.destroy()
+        for widget in self._dynamic_widgets:
+            widget.destroy()
 
-        self._dynamic_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
-        self._dynamic_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
-        self._dynamic_frame.grid_columnconfigure(0, weight=0)
-        self._dynamic_frame.grid_columnconfigure(1, weight=1)
-
-        self.build_dynamic_content(self._dynamic_frame, self.controller, self.ui_state)
+        before = set(self.frame.winfo_children())
+        self.build_dynamic_content(self.frame, self.controller, self.ui_state)
+        self._dynamic_widgets = [c for c in self.frame.winfo_children() if c not in before]
 
     def set_converting(self, active):
         self.button.configure(state="disabled" if active else "normal")

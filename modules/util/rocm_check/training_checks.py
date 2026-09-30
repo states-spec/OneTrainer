@@ -276,7 +276,16 @@ def offloading(ctx: Ctx, rec: Rec):
         part = TrainModelPartConfig.default_values()
         part.offload_fraction, part.activation_offloading, part.gradient_checkpointing = fraction, act, True
         conductor = enable_checkpointing(model, config, part, False, [(model.blocks, ["hidden_states"])])
+        before = torch.cuda.memory_allocated(ctx.device) if ctx.is_gpu else 0
         conductor.materialize()
+        if ctx.is_gpu:
+            # the values below would still match if offloaded weights stayed on the GPU; the memory wouldn't: only the
+            # loaded layers (plus the cache's rounding) may be there
+            total = sum(p.numel() * p.element_size() for p in model.blocks.parameters())
+            used = torch.cuda.memory_allocated(ctx.device) - before
+            bound = (1 - fraction) * total * 1.1 + 2 * total / layers
+            rec.expect(used <= bound, f"{label}: {used / 2**20:.0f} MiB of the {total / 2**20:.0f} MiB of layers on the GPU "
+                                      f"after materialize (at most {bound / 2**20:.0f} MiB with offload {fraction})")
         worst = 0.0
         for step in range(4):
             x = _rand(ctx, 2, [256, 1024, 64, 512][step], dim, seed=step).to(ctx.device)

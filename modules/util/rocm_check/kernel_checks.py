@@ -209,6 +209,9 @@ def sdpa_choice(ctx: Ctx, rec: Rec):
                 if ctx.is_gpu and choice == SDPBackend.MATH and "differs" not in name and dtype != torch.float32:
                     rec.warn(f"head dim {d} {DTYPE_NAME[dtype]} {name}: falls back to the MATH kernel")
             rec.line(f"head dim {d} {DTYPE_NAME[dtype]}: " + "; ".join(row))
+    if rocm_sdpa_fix.applies_to(ctx.device) and rocm_sdpa_fix.installed():
+        rec.line(f"(PyTorch's own choice. On this GPU OneTrainer runs head sizes above {rocm_sdpa_fix.MAX_HEAD_DIM} on the "
+                 f"math kernel instead, see the SDPA forward+backward check)")
     for family in FAMILIES:
         for res in ctx.resolutions:
             s = family.seq(res)

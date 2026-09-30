@@ -39,7 +39,7 @@ results up to the check that was running (the report names it). The exit code is
    - optimizers built by OneTrainer's own `create_optimizer` (ADV optimizers with every state precision, AdamW,
      schedule-free ones), with a save/resume round trip like a backup
    - layer and activation offloading through the real `LayerOffloadConductor`: same loss and gradients as without
-     offloading, weights bit-identical after load/unload cycles
+     offloading, only the loaded layers on the GPU after loading, weights bit-identical after load/unload cycles
    - pinned host memory and transfer speed
    - concurrent VAE encodes, as caching with `dataloader_threads` > 1 does, with and without the lock OneTrainer
      now uses (on ROCm, unlocked concurrent encodes once gave random NaN latents)

@@ -240,9 +240,8 @@ class Report:
         if problems:
             out.append("")
             out.append("problems:")
-            for r in problems:
-                first = next((line for line in r["lines"] if line.startswith(r["status"])), "")
-                out.append(f"  [{r['status']}] {r['section']} / {r['name']}: {first}")
+            out.extend(f"  [{r['status']}] {r['section']} / {r['name']}: {_first_problem(r['status'], r['lines'])}"
+                       for r in problems)
         section = None
         for r in self.results:
             if r["section"] != section:
@@ -253,6 +252,13 @@ class Report:
             for k, v in r["metrics"].items():
                 out.append(f"    {k}: {_fmt(v)}")
         return "\n".join(out) + "\n"
+
+
+def _first_problem(status: str, lines: list[str]) -> str:
+    # the check's first line with its status (e.g. "FAIL: ..."), without that prefix: the later lines are often "ok"
+    # lines or other details, which made the summary show a passing comparison for a failed check
+    line = next((line for line in lines if line.startswith(status + ": ")), "")
+    return line.removeprefix(status + ": ")
 
 
 def _fmt(v) -> str:
@@ -334,5 +340,5 @@ def run_checks(ctx: Ctx, report: Report, only: list[str] | None, skip: list[str]
                                "metrics": rec.metrics, "seconds": time.perf_counter() - t0})
         report.running = None
         report.write()
-        print(f"    -> {rec.status}" + (f": {rec.lines[-1]}" if rec.status in (FAIL, WARN) and rec.lines else ""),
-              flush=True)
+        problem = _first_problem(rec.status, rec.lines) if rec.status in (FAIL, WARN) else ""
+        print(f"    -> {rec.status}" + (f": {problem}" if problem else ""), flush=True)

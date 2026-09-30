@@ -317,4 +317,3 @@ def compile_speed(ctx: Ctx, rec: Rec):
     rec.metric("eager ms", eager_ms)
     rec.metric("compiled ms", compiled_ms)
     rec.metric("compile seconds", compile_s)
-

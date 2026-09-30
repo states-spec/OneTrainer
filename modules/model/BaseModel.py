@@ -121,10 +121,15 @@ class BaseModel(metaclass=ABCMeta):
             for part in parts:
                 self._move_part(part, self.train_device)
         except torch.OutOfMemoryError:
+            # expandable_segments gave wrong results on an RX 7900 XTX (see LAUNCH-SCRIPTS.md), so on ROCm it is only
+            # named with the check that decides whether it is safe
+            expandable = ("OT_EXPANDABLE_SEGMENTS=true can help, but on AMD GPUs only if "
+                          "'./run-cmd.sh rocm_check --only allocator' passes (it gave wrong results on an RX 7900 XTX)"
+                          if torch.version.hip else "launching with OT_EXPANDABLE_SEGMENTS=true can help (see LAUNCH-SCRIPTS.md)")
             print(f"Out of GPU memory while loading {part} onto {self.train_device} ({vram_summary(self.train_device)}). "
-                  f"{self._part_weights_summary(part)}If much memory is reserved by PyTorch without tensors, it is fragmented: launching with "
-                  f"OT_EXPANDABLE_SEGMENTS=true can help (test it first, see LAUNCH-SCRIPTS.md). Otherwise less of the "
-                  f"model has to stay on the GPU: raise the part's layer offload fraction, or use a smaller weight data type.")
+                  f"{self._part_weights_summary(part)}Less of the model has to stay on the GPU: raise the part's layer "
+                  f"offload fraction, or use a smaller weight data type. If much memory is reserved by PyTorch without "
+                  f"tensors, it is fragmented: {expandable}.")
             raise
         _log_vram(self.train_device, f"after loading {', '.join(parts)}")
 

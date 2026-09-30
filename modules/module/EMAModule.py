@@ -62,7 +62,9 @@ class EMAModuleWrapper:
 
     def copy_ema_to(self, parameters: Iterable[torch.nn.Parameter], store_temp: bool = True) -> None:
         if store_temp:
-            self.temp_stored_parameters = [parameter.detach().cpu() for parameter in parameters]
+            # copy=True: .cpu() of a parameter already on the CPU returns the same memory, which the EMA weights would
+            # then overwrite, so copy_temp_to would restore the EMA weights instead of the trained ones
+            self.temp_stored_parameters = [parameter.detach().to("cpu", copy=True) for parameter in parameters]
 
         parameters = list(parameters)
         for ema_parameter, parameter in zip(self.ema_parameters, parameters, strict=True):

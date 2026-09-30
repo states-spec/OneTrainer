@@ -559,10 +559,12 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "geometric_wd": False,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
-        "state_precision": "auto",
+        # the settings window fills left, right, left, ...: this order keeps the dropdowns in the left column, where
+        # the entries make it wide (in the right column, next to only checkboxes, they were squeezed)
         "stochastic_rounding": True,
+        "centered_wd_mode": "float8",
         "compile": False,
+        "state_precision": "auto",
         "fused_back_pass": False,
         "orthogonal_gradient": "disabled",
         "nesterov": False,
@@ -578,10 +580,11 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "geometric_wd": False,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
-        "state_precision": "auto",
+        # dropdowns in the left column, see SIGNSGD_ADV
         "stochastic_rounding": True,
+        "centered_wd_mode": "float8",
         "compile": False,
+        "state_precision": "auto",
         "fused_back_pass": False,
         "sinkhorn_iterations": 5,
         "orthogonal_sinkhorn": False,

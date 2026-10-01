@@ -97,6 +97,7 @@ class GenericTrainer(BaseTrainer):
                 f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
             )
         self.__check_device_support()
+        create.check_optimizer_config(self.config.optimizer)
 
         if multi.is_master():
             self.__save_config_to_workspace()

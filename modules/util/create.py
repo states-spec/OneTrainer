@@ -204,6 +204,29 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
                     state[key] = saved_value.to(device=value.device, copy=True)
 
 
+# adv_optm 2.5.13's Prodigy_adv keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
+# (exp_avg.lerp_(grad, 1 - coef)). That term is 1/d times too large, so every step moves each weight by about
+# 0.1 * lr whatever d is: at lr 1 a LoRA turned to noise within the first steps. The other adv_optm optimizers keep
+# their momentum in gradient units and are not affected.
+_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13): it moves every weight by about "
+                         "0.1 x the learning rate per step regardless of Prodigy's step size, which destroys the model. "
+                         "Turn Nesterov off for PRODIGY_ADV")
+
+
+def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
+    # settings known to break training; GenericTrainer.start calls it before the model loads
+    if optimizer_config.optimizer == Optimizer.PRODIGY_ADV and optimizer_config.nesterov:
+        raise ValueError(_PRODIGY_ADV_NESTEROV + ".")
+
+
+def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
+    # a resumed group keeps the backup's settings, so a backup made with Nesterov on would still use it
+    if any(group.get('nesterov') for group in optimizer.param_groups):
+        print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The backup was made with it on; it is turned off for this run.")
+        for group in optimizer.param_groups:
+            group['nesterov'] = False
+
+
 def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
     # adv_optm creates the Kourkoutas-beta helper only in the constructor, when kourkoutas_beta is set there, but each
     # step reads the flag from the param group. A resumed group keeps the backup's flag, so resuming a Kourkoutas
@@ -823,6 +846,7 @@ def create_optimizer(
         # PRODIGY_ADV Optimizer
         case Optimizer.PRODIGY_ADV:
             from adv_optm import Prodigy_adv
+            check_optimizer_config(optimizer_config)
             optimizer = Prodigy_adv(
                 params=parameters,
                 lr=config.learning_rate,
@@ -1230,6 +1254,8 @@ def create_optimizer(
         if optimizer_config.optimizer.is_adv_optm:
             _restore_adv_optm_state_dtypes(optimizer, state_dict)
             _restore_kourkoutas_helper(optimizer)
+            if optimizer_config.optimizer == Optimizer.PRODIGY_ADV:
+                _disable_prodigy_adv_nesterov(optimizer)
 
     return optimizer
 

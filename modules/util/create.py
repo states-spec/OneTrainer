@@ -204,6 +204,35 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
                     state[key] = saved_value.to(device=value.device, copy=True)
 
 
+def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
+    # adv_optm creates the Kourkoutas-beta helper only in the constructor, when kourkoutas_beta is set there, but each
+    # step reads the flag from the param group. A resumed group keeps the backup's flag, so resuming a Kourkoutas
+    # backup with the option turned off failed in the first step ("no attribute 'kourkoutas_helper'").
+    if getattr(optimizer, 'kourkoutas_helper', None) is None and any(
+            group.get('kourkoutas_beta') or group.get('adam_kourkoutas_beta') for group in optimizer.param_groups):
+        from adv_optm.util.Kourkoutas import KourkoutasHelper
+        optimizer.kourkoutas_helper = KourkoutasHelper(optimizer)
+
+
+# param group keys that hold a setting from the config (TrainOptimizerConfig fields, plus the ones the optimizers
+# name differently); the other keys are the optimizer's own running values, like Prodigy's d
+_OPTIMIZER_SETTING_ALIASES = {"betas", "compiled_optimizer"}
+
+
+def _changed_optimizer_settings(group_name: str, saved_group: dict, new_group: dict) -> list[str]:
+    # "k" is also Prodigy's step counter
+    settings = (set(TrainOptimizerConfig.default_values().types) | _OPTIMIZER_SETTING_ALIASES) - {"optimizer", "k"}
+    changed = []
+    for key in sorted(settings & saved_group.keys() & new_group.keys()):
+        try:
+            differs = bool(saved_group[key] != new_group[key])
+        except (RuntimeError, TypeError, ValueError):
+            continue
+        if differs:
+            changed.append(f"{group_name}.{key}: backup {saved_group[key]!r}, config {new_group[key]!r}")
+    return changed
+
+
 def create_optimizer(
         parameter_group_collection: NamedParameterGroupCollection,
         state_dict: dict | None,
@@ -1149,6 +1178,7 @@ def create_optimizer(
             state = {}
             param_groups = []
             state_index = 0
+            changed_settings = []
 
             for new_group_index, unique_group_name in enumerate(new_group_mapping):
                 if (unique_group_name in old_group_mapping and str(config.optimizer.optimizer) ==
@@ -1157,6 +1187,7 @@ def create_optimizer(
                     old_group_index = old_group_mapping.index(unique_group_name)
                     new_group = new_param_groups[new_group_index]
                     old_group = old_param_groups[old_group_index]
+                    changed_settings += _changed_optimizer_settings(unique_group_name, old_group, new_group)
                     for i, old_state_index in enumerate(old_group['params']):
                         if old_state_index in old_state:
                             state[state_index] = old_state[old_state_index]
@@ -1179,6 +1210,11 @@ def create_optimizer(
             state_dict['state'] = state
             state_dict['param_groups'] = param_groups
 
+            if changed_settings:
+                print("Warning: these optimizer settings differ between the backup and the config. The training "
+                      "continues with the backup's values (only the learning rate is taken from the config); start "
+                      "without the backup to use the new ones:\n  " + "\n  ".join(changed_settings))
+
         if optimizer_config.optimizer.is_adv_optm:
             # adv_optm 2.5 reads this group key when loading, but only sets it for groups with non-factored states
             # (never for Lion_adv or state_precision="factored"), so those states could not be resumed
@@ -1193,6 +1229,7 @@ def create_optimizer(
 
         if optimizer_config.optimizer.is_adv_optm:
             _restore_adv_optm_state_dtypes(optimizer, state_dict)
+            _restore_kourkoutas_helper(optimizer)
 
     return optimizer
 

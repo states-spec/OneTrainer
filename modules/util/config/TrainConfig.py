@@ -480,6 +480,7 @@ class TrainConfig(BaseConfig):
     ciop_noise_weight: float
     ciop_p: float
     cep_gamma: float
+    k_noise_sampling: int
     rescale_noise_scheduler_to_zero_terminal_snr: bool
     force_v_prediction: bool
     force_epsilon_prediction: bool
@@ -1147,6 +1148,7 @@ class TrainConfig(BaseConfig):
         data.append(("ciop_noise_weight", 0.0, float, False))
         data.append(("ciop_p", 0.8, float, False))
         data.append(("cep_gamma", 0.0, float, False))
+        data.append(("k_noise_sampling", 1, int, False))
         data.append(("rescale_noise_scheduler_to_zero_terminal_snr", False, bool, False))
         data.append(("force_v_prediction", False, bool, False))
         data.append(("force_epsilon_prediction", False, bool, False))

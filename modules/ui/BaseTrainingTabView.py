@@ -757,6 +757,12 @@ class BaseTrainingTabView(ABC):
         self.components.entry(frame, row, 1, ui_state, "cep_gamma")
         row += 1
 
+        # Immiscible Diffusion noise candidates
+        self.components.label(frame, row, 0, "Noise Candidates",
+                              tooltip="Immiscible Diffusion: draws this many noise samples per image and trains on the one nearest to the image's latent, which can speed up training. 1 disables it (plain Gaussian noise). Each candidate costs one extra noise sample of memory and compute.")
+        self.components.entry(frame, row, 1, ui_state, "k_noise_sampling")
+        row += 1
+
         # perturbation noise weight
         self.components.label(frame, row, 0, "Perturbation Noise Weight",
                               tooltip="The weight of perturbation noise added to each training step")

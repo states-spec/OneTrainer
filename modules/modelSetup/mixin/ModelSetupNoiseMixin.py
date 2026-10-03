@@ -84,12 +84,15 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             timestep: Tensor | None = None,
             betas: Tensor | None = None,
     ) -> Tensor:
-        noise = torch.randn(
-            source_tensor.shape,
-            generator=generator,
-            device=config.train_device,
-            dtype=source_tensor.dtype
-        )
+        if config.k_noise_sampling > 1:
+            noise = self._immiscible_noise(source_tensor, config, generator)
+        else:
+            noise = torch.randn(
+                source_tensor.shape,
+                generator=generator,
+                device=config.train_device,
+                dtype=source_tensor.dtype
+            )
 
         if config.offset_noise_weight > 0:
             offset_noise = torch.randn(
@@ -119,6 +122,31 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             noise = noise + (config.perturbation_noise_weight * perturbation_noise)
 
         return noise
+
+    @staticmethod
+    @torch.no_grad()
+    def _immiscible_noise(source_tensor: Tensor, config: TrainConfig, generator: Generator) -> Tensor:
+        """
+        Immiscible Diffusion, noise oversampling: draws k_noise_sampling noise candidates per sample and keeps the one
+        nearest to the sample's latent (L2).
+        Paper: "Improved Immiscible Diffusion: Accelerate Diffusion Training by Reducing Its Miscibility"
+        (https://arxiv.org/abs/2505.18521)
+        """
+        batch_size = source_tensor.shape[0]
+        candidates = torch.randn(
+            (batch_size, config.k_noise_sampling, *source_tensor.shape[1:]),
+            generator=generator,
+            device=config.train_device,
+            dtype=source_tensor.dtype
+        )
+
+        # float32: a latent has up to ~1e5 elements, so squared distances overflow float16 (and CPU cdist has no
+        # float16 kernel). Distances of ~360 differ by ~1 between candidates at 512 px, well within float32.
+        latents = source_tensor.flatten(start_dim=1).float().unsqueeze(1)
+        distance = (candidates.flatten(start_dim=2).float() - latents).square().sum(dim=-1)
+        index = distance.argmin(dim=1)
+
+        return candidates[torch.arange(batch_size, device=candidates.device), index]
 
     @staticmethod
     def _apply_conditional_embedding_perturbation(

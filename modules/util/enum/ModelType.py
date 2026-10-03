@@ -1,5 +1,6 @@
 from enum import Enum
 
+from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.TrainingMethod import TrainingMethod
 
@@ -183,6 +184,16 @@ class ModelType(Enum):
             or self.is_z_image() \
             or self.is_ernie() \
             or self.is_ideogram()
+
+    def supported_loss_weights(self) -> list[LossWeight]:
+        # what the model setup's loss function implements (ModelSetupDiffusionLossMixin): _flow_matching_losses takes
+        # CONSTANT and SIGMA, _diffusion_losses the others. Sana is a flow matching model, but BaseSanaSetup uses
+        # _diffusion_losses, where SIGMA raised NotImplementedError at the first step
+        if self.is_flow_matching() and not self.is_sana():
+            return [weight for weight in LossWeight if weight.supports_flow_matching()]
+        if self.is_sana():
+            return [LossWeight.CONSTANT]
+        return [weight for weight in LossWeight if weight == LossWeight.CONSTANT or not weight.supports_flow_matching()]
 
     def is_video_model(self) -> bool:
         return self.is_hunyuan_video() #incase we add more video models in the future

@@ -96,6 +96,13 @@ class GenericTrainer(BaseTrainer):
                 f"Output format {self.config.output_model_format} can't save {self.config.training_method} training of "
                 f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
             )
+        # a value saved for another model type stays when the type changes; the loss function raised at the first step
+        loss_weights = self.config.model_type.supported_loss_weights()
+        if self.config.loss_weight_fn not in loss_weights:
+            raise ValueError(
+                f"Loss weight function {self.config.loss_weight_fn} doesn't work with {self.config.model_type}. "
+                f"Set loss_weight_fn to one of: {', '.join(str(w) for w in loss_weights)}."
+            )
         self.__check_device_support()
         create.check_optimizer_config(self.config.optimizer)
 

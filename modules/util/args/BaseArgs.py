@@ -12,9 +12,6 @@ class BaseArgs(BaseConfig):
     def __to_arg_name(self, var_name: str) -> str:
         return "--" + var_name.replace('_', '-')
 
-    def __to_var_name(self, arg_name: str) -> str:
-        return arg_name.lstrip('-').replace('-', '_')
-
     def to_args(self) -> str:
         data = []
         for name in self.types:

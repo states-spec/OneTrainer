@@ -854,10 +854,6 @@ class LayerOffloadConductor:
         self.__activations_transfer_event_map.clear()
         self.__temp_device_activations_allocator.deallocate()
 
-    def __wait_all_layer_train(self):
-        for layer_index in range(len(self.__layers)):
-            self.__wait_layer_train(layer_index)
-
     def __wait_all_layer_transfers(self):
         for layer_index in range(len(self.__layers)):
             self.__wait_layer_transfer(layer_index)

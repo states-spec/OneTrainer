@@ -206,12 +206,6 @@ class BaseFieldValidator(ABC):
     def flush(self) -> str | None:
         pass
 
-    def _get_var_safe(self, name: str):
-        try:
-            return self.ui_state.get_var(name)
-        except (KeyError, AttributeError):
-            return None
-
     def validate(self, value: str) -> str | None:
         """Return an error string if *value* is invalid, else None."""
         meta = self.ui_state.get_field_metadata(self.var_name)

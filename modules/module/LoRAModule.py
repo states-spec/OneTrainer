@@ -129,14 +129,6 @@ class PeftBase(nn.Module):
     def initialize_weights(self):
         pass
 
-    @abstractmethod
-    def apply_to_module(self):
-        pass
-
-    @abstractmethod
-    def extract_from_module(self, base_module: nn.Module):
-        pass
-
     def create_layer(self) -> tuple[nn.Module, nn.Module]:
         """Generic helper function for creating a PEFT layer, like LoRA.
 
@@ -210,12 +202,6 @@ class PeftBase(nn.Module):
                 raise NotImplementedError("Should never be called on a dummy module.")
 
             def remove_hook_from_module(self):
-                raise NotImplementedError("Should never be called on a dummy module.")
-
-            def apply_to_module(self):
-                raise NotImplementedError("Should never be called on a dummy module.")
-
-            def extract_from_module(self, base_module: nn.Module):
                 raise NotImplementedError("Should never be called on a dummy module.")
 
         return Dummy
@@ -312,14 +298,6 @@ class LoHaModule(PeftBase):
                               self.dropout(self.hada_w2_a))
         W = (W1 * W2) * (self.alpha / self.rank)
         return self.op(x, W, bias=None, **self.layer_kwargs)
-
-    def apply_to_module(self):
-        # TODO
-        pass
-
-    def extract_from_module(self, base_module: nn.Module):
-        # TODO
-        pass
 
 
 class LoKrModule(PeftBase):
@@ -547,14 +525,6 @@ class LoKrModule(PeftBase):
                 w = self.get_weight() * scale
                 return self.orig_forward(x) + self.op(x, w.to(x.dtype), bias=None, **self.layer_kwargs)
 
-    def apply_to_module(self):
-        # TODO
-        pass
-
-    def extract_from_module(self, base_module: nn.Module):
-        # TODO
-        pass
-
 
 class LoRAModule(PeftBase):
     lora_down: nn.Module | None
@@ -603,14 +573,6 @@ class LoRAModule(PeftBase):
         self.check_initialized()
         ld = self.lora_up(self.dropout(self.lora_down(x)))
         return ld * (self.alpha / self.rank)
-
-    def apply_to_module(self):
-        # TODO
-        pass
-
-    def extract_from_module(self, base_module: nn.Module):
-        # TODO
-        pass
 
 
 class OFTModule(PeftBase):
@@ -732,14 +694,6 @@ class OFTModule(PeftBase):
         rotated_weight = rotated_weight_reshaped.reshape(weight.shape)
 
         return self.op(x, rotated_weight, self.orig_module.bias, **self.layer_kwargs)
-
-    def apply_to_module(self):
-        # TODO
-        pass
-
-    def extract_from_module(self, base_module: nn.Module):
-        # TODO
-        pass
 
     def check_initialized(self):
         super().check_initialized()
@@ -1134,20 +1088,6 @@ class LoRAModuleWrapper:
         """
         for module in self.lora_modules.values():
             module.remove_hook_from_module()
-
-    def apply_to_module(self):
-        """
-        Applys the LoRA to the module, changing its weights
-        """
-        for module in self.lora_modules.values():
-            module.apply_to_module()
-
-    def extract_from_module(self, base_module: nn.Module):
-        """
-        Creates a LoRA from the difference between the base_module and the orig_module
-        """
-        for module in self.lora_modules.values():
-            module.extract_from_module(base_module)
 
     def prune(self):
         """

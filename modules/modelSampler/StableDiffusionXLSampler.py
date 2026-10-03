@@ -285,7 +285,6 @@ class StableDiffusionXLSampler(BaseModelSampler):
                         dtype=self.model.vae_train_dtype.torch_dtype(),
                         device=self.train_device,
                     )
-                    conditioning_image = conditioning_image
                     latent_conditioning_image = vae.encode(conditioning_image).latent_dist.mode() * vae.config.scaling_factor
                     latent_mask = torch.ones(
                         size=(1, 1, latent_conditioning_image.shape[2], latent_conditioning_image.shape[3]),

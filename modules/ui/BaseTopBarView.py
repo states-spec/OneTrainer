@@ -131,10 +131,6 @@ class BaseTopBarView:
 
         self.load_preset_callback()
 
-    def __remove_config(self):
-        # TODO
-        pass
-
     def open_wiki(self):
         self.controller.open_wiki()
 

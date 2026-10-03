@@ -60,8 +60,7 @@ def build_muon_adam_key_fn(
             case _: # Unmatched cases
                 raise NotImplementedError(f"Default hidden layer patterns are not defined for model type: {model.model_type}")
         filters = [ModuleFilter(p, use_regex=False) for p in default_patterns]
-        if True:
-            print(f"[MuonWithAuxAdam] Using default hidden layer patterns for {model.model_type}.")
+        print(f"[MuonWithAuxAdam] Using default hidden layer patterns for {model.model_type}.")
 
 
     def get_optim_type(param_name: str, p: torch.nn.Parameter) -> str:

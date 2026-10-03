@@ -85,11 +85,6 @@ class OFTRotationModule(nn.Module):
         matrix = matrix - matrix.transpose(-2, -1)
         return matrix
 
-    def _pytorch_skew_symmetric_inv(self, matrix, block_size):
-        # Extract the upper triangular elements
-        vec = matrix[:, self.rows, self.cols]
-        return vec
-
     @staticmethod
     def _cans_newton_schulz_iteration(G: torch.Tensor, steps: int, eps: float = 1e-7) -> torch.Tensor:
         """
@@ -140,19 +135,19 @@ class OFTRotationModule(nn.Module):
 
         Q_skew = self._pytorch_skew_symmetric(Q, block_size)
 
-        if oft_cans:
+        if oft_cans or not use_cayley_neumann:
             # exact Cayley transform (I + Q)(I - Q)^-1 as the polar factor of (I + Q)^2: |I + Q|^2 = I - Q^2
             eye_matrix = torch.eye(block_size, device=Q_skew.device, dtype=Q_skew.dtype).expand(b, -1, -1)
             G = eye_matrix + 2 * Q_skew + torch.bmm(Q_skew, Q_skew)
             # bf16 reaches its precision floor (orthogonality error ~1e-2) in 5 steps, fp32 ~1e-6 in 7
             R = self._cans_newton_schulz_iteration(G, steps=5 if G.dtype == torch.bfloat16 else 7)
-        elif use_cayley_neumann and num_neumann_terms == 5:
+        elif num_neumann_terms == 5:
             # I + 2Q + 2Q^2 + 2Q^3 + Q^4 in Horner form: two matmuls instead of three
             eye_matrix = torch.eye(block_size, device=Q.device, dtype=Q.dtype).expand(b, -1, -1)
             Q_squared = torch.bmm(Q_skew, Q_skew)
             inner = eye_matrix * 2.0 + Q_skew * 2.0 + Q_squared
             R = eye_matrix + Q_skew * 2.0 + torch.bmm(Q_squared, inner)
-        elif use_cayley_neumann:
+        else:
             R = torch.eye(block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
             if num_neumann_terms > 1:
                 R.add_(Q_skew, alpha=2.0)
@@ -166,13 +161,6 @@ class OFTRotationModule(nn.Module):
                         R.add_(Q_power, alpha=2.0)
                     Q_power = torch.bmm(Q_power, Q_skew)
                     R.add_(Q_power)
-        else:
-            id_mat = (
-                torch.eye(Q_skew.shape[-1], device=Q_skew.device)
-                .unsqueeze(0)
-                .expand(b, Q_skew.shape[-1], Q_skew.shape[-1])
-            )
-            R = torch.linalg.solve(id_mat + Q_skew, id_mat - Q_skew, left=False)
 
         return R.to(previous_dtype)
 

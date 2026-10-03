@@ -969,6 +969,11 @@ class TrainConfig(BaseConfig):
         return ((self.training_method == TrainingMethod.EMBEDDING) and self.embedding.is_output_embedding) \
             or any((embedding.train and embedding.is_output_embedding) for embedding in self.additional_embeddings)
 
+    def uses_custom_conditioning_image(self) -> bool:
+        # only models with a conditioning image input (inpainting) use it; elsewhere the extra image was still loaded
+        # and augmented, which changed the random augmentations without any other effect
+        return self.custom_conditioning_image and self.model_type.has_conditioning_image_input()
+
     def train_text_encoder_or_embedding(self) -> bool:
         return (self.text_encoder.train and self.training_method != TrainingMethod.EMBEDDING
                 and not self.embedding.is_output_embedding) \

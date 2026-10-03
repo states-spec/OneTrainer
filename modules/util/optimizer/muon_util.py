@@ -135,6 +135,13 @@ def split_parameters_for_muon(
 
     # If not using AuxAdam, just use the original parameter groups
     if not (MuonWithAuxAdam and layer_key_fn):
+        # Muon orthogonalizes matrices; a 1D parameter (bias, norm weight) failed in the first optimizer step
+        vectors = [(group.get('name'), tuple(p.shape)) for group in parameters for p in group['params']
+                   if p.requires_grad and p.ndim < 2]
+        if vectors:
+            raise ValueError(f"{optimizer_config.optimizer} without the auxiliary Adam can't train 1D parameters "
+                             f"(biases, norm weights): {len(vectors)} of them, e.g. {vectors[0][1]} in "
+                             f"'{vectors[0][0]}'. Turn on MuonWithAuxAdam, or train only 2D weights (e.g. a LoRA).")
         for group in parameters:
             group['optim_type'] = 'muon'
         return parameters, MuonWithAuxAdam

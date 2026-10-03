@@ -208,15 +208,17 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
 # (exp_avg.lerp_(grad, 1 - coef)). That term is 1/d times too large, so every step moves each weight by about
 # 0.1 * lr whatever d is: at lr 1 a LoRA turned to noise within the first steps. The other adv_optm optimizers keep
 # their momentum in gradient units and are not affected.
-_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13): it moves every weight by about "
-                         "0.1 x the learning rate per step regardless of Prodigy's step size, which destroys the model. "
-                         "Turn Nesterov off for PRODIGY_ADV")
+_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13 and every later release and "
+                         "branch so far): it moves every weight by about 0.1 x the learning rate per step regardless of "
+                         "Prodigy's step size, which destroys the model")
 
 
 def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
-    # settings known to break training; GenericTrainer.start calls it before the model loads
+    # turns off settings known to break training; GenericTrainer.start calls it before the model loads. The UI hides
+    # these settings for the optimizer, so a value saved earlier could not be changed there.
     if optimizer_config.optimizer == Optimizer.PRODIGY_ADV and optimizer_config.nesterov:
-        raise ValueError(_PRODIGY_ADV_NESTEROV + ".")
+        print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The config has it on; it is turned off for this run.")
+        optimizer_config.nesterov = False
 
 
 def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
@@ -225,6 +227,12 @@ def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
         print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The backup was made with it on; it is turned off for this run.")
         for group in optimizer.param_groups:
             group['nesterov'] = False
+
+
+def _effective_snr_cond(optimizer_config: TrainOptimizerConfig) -> bool:
+    # adv_optm applies SNR preconditioning only with normed momentum and momentum > 0, but its constructor raises when
+    # the option is set without both of them; the UI greys the option out then, so a value saved earlier stays set
+    return bool(optimizer_config.snr_cond and optimizer_config.normed_momentum and (optimizer_config.momentum or 0) > 0)
 
 
 def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
@@ -907,7 +915,7 @@ def create_optimizer(
                 stochastic_rounding=optimizer_config.stochastic_rounding,
                 stochastic_sign=optimizer_config.stochastic_sign if optimizer_config.stochastic_sign is not None else False,
                 normed_momentum=optimizer_config.normed_momentum if optimizer_config.normed_momentum is not None else False,
-                snr_cond=optimizer_config.snr_cond if optimizer_config.snr_cond is not None else False,
+                snr_cond=_effective_snr_cond(optimizer_config),
                 compiled_optimizer=optimizer_config.compile if optimizer_config.compile is not None else False,
                 **_adv_common_kwargs(optimizer_config),
             )
@@ -923,7 +931,7 @@ def create_optimizer(
                 sinkhorn_iterations=optimizer_config.sinkhorn_iterations if optimizer_config.sinkhorn_iterations is not None else 5,
                 orthogonal_sinkhorn=optimizer_config.orthogonal_sinkhorn if optimizer_config.orthogonal_sinkhorn is not None else False,
                 normed_momentum=optimizer_config.normed_momentum if optimizer_config.normed_momentum is not None else False,
-                snr_cond=optimizer_config.snr_cond if optimizer_config.snr_cond is not None else False,
+                snr_cond=_effective_snr_cond(optimizer_config),
                 geometric_wd=optimizer_config.geometric_wd if optimizer_config.geometric_wd is not None else False,
                 cautious_wd=optimizer_config.cautious_wd if optimizer_config.cautious_wd is not None else False,
                 stochastic_rounding=optimizer_config.stochastic_rounding,

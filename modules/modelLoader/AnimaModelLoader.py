@@ -1,4 +1,5 @@
 import os
+import re
 import traceback
 
 from modules.model.AnimaModel import AnimaModel
@@ -21,6 +22,60 @@ from diffusers import (
     GGUFQuantizationConfig,
 )
 from transformers import Qwen2Tokenizer, Qwen3Model, T5TokenizerFast
+
+# top-level transformer blocks in the original (net.blocks.N.), prefix-free (blocks.N.) and diffusers
+# (transformer_blocks.N.) layouts; nested blocks such as an LLM adapter's (net.llm_adapter.blocks.N.) don't match
+_TRANSFORMER_BLOCK_KEY = re.compile(r"^(?:net\.)?(?:transformer_)?blocks\.(\d+)\.")
+_FIRST_BLOCK_Q_KEYS = (
+    "net.blocks.0.self_attn.q_proj.weight",
+    "blocks.0.self_attn.q_proj.weight",
+    "transformer_blocks.0.attn1.to_q.weight",
+)
+
+
+def _read_tensor_shapes(path: str) -> dict[str, tuple[int, ...]] | None:
+    # reads only the file header; None for anything that is not a local file (e.g. a URL)
+    if not os.path.isfile(path):
+        return None
+    if path.endswith(".gguf"):
+        from gguf import GGUFReader
+        return {tensor.name: tuple(int(x) for x in tensor.shape) for tensor in GGUFReader(path).tensors}
+
+    from safetensors import safe_open
+    with safe_open(path, framework="pt", device="cpu") as f:
+        return {key: tuple(f.get_slice(key).get_shape()) for key in f.keys()}  # noqa: SIM118
+
+
+def transformer_config_overrides(transformer_model_name: str, config: dict) -> dict:
+    """
+    Config values for a single-file transformer whose depth differs from the base model's config, e.g. the 40-block
+    Anima 2.9B against the 28-block base model. from_single_file loads with strict=False: without the override, blocks
+    beyond the config's num_layers are dropped with only a log warning.
+    """
+    shapes = _read_tensor_shapes(transformer_model_name)
+    if not shapes:
+        return {}
+
+    indices = {int(m.group(1)) for key in shapes if (m := _TRANSFORMER_BLOCK_KEY.match(key))}
+    if not indices:
+        return {}
+    num_layers = max(indices) + 1
+    if indices != set(range(num_layers)):
+        raise ValueError(f"The transformer file {transformer_model_name} has gaps in its block numbering "
+                         f"({len(indices)} blocks, highest index {num_layers - 1}).")
+
+    hidden_size = config["num_attention_heads"] * config["attention_head_dim"]
+    q_shape = next((shapes[key] for key in _FIRST_BLOCK_Q_KEYS if key in shapes), None)
+    if q_shape is not None and hidden_size not in q_shape:
+        raise ValueError(f"The transformer file {transformer_model_name} has a block width of {max(q_shape)}, but the "
+                         f"base model's transformer config has {hidden_size}. Only the number of blocks is detected "
+                         f"from the file; use a base model with the same width.")
+
+    if num_layers == config["num_layers"]:
+        return {}
+    print(f"The transformer file has {num_layers} blocks, the base model's config {config['num_layers']}: "
+          f"loading it with {num_layers} blocks.")
+    return {"num_layers": num_layers}
 
 
 class AnimaModelLoader(
@@ -103,6 +158,10 @@ class AnimaModelLoader(
             )
 
         if transformer_model_name:
+            config_overrides = transformer_config_overrides(
+                transformer_model_name,
+                CosmosTransformer3DModel.load_config(base_model_name, subfolder="transformer"),
+            )
             transformer = CosmosTransformer3DModel.from_single_file(
                 transformer_model_name,
                 config=base_model_name,
@@ -110,6 +169,7 @@ class AnimaModelLoader(
                 #avoid loading the transformer in float32:
                 torch_dtype=torch.bfloat16 if weight_dtypes.transformer.torch_dtype() is None else weight_dtypes.transformer.torch_dtype(),
                 quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16) if weight_dtypes.transformer.is_gguf() else None,
+                **config_overrides,
             )
             transformer = self._convert_diffusers_sub_module_to_dtype(
                 transformer, weight_dtypes.transformer, weight_dtypes.train_dtype, quantization,

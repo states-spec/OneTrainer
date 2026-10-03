@@ -788,6 +788,72 @@ class GPUCollector:
             ]
 
 
+class TorchGPUInfo:
+    # runs in its own Python, so a PyTorch or GPU driver problem can't stop the report
+    PROBE = textwrap.dedent("""
+        import json, os
+        import torch
+        info = {"torch": torch.__version__, "cuda": torch.version.cuda, "hip": torch.version.hip,
+                "available": torch.cuda.is_available(), "devices": []}
+        if info["available"]:
+            for i in range(torch.cuda.device_count()):
+                p = torch.cuda.get_device_properties(i)
+                arch = getattr(p, "gcnArchName", "") if torch.version.hip else f"sm_{p.major}{p.minor}"
+                info["devices"].append(f"{p.name} ({arch}, {p.total_memory / 2**30:.1f} GiB)")
+        try:
+            import bitsandbytes.cextension as bnb_ext
+            if isinstance(bnb_ext.lib, bnb_ext.ErrorHandlerMockBNBNativeLibrary):
+                info["bitsandbytes"] = "its native library failed to load"
+            else:
+                info["bitsandbytes"] = os.path.basename(bnb_ext.lib._lib._name)
+        except Exception as e:
+            info["bitsandbytes"] = f"import failed: {type(e).__name__}: {e}"
+        print(json.dumps(info))
+    """)
+
+    ENV_VARS = [
+        "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "HSA_OVERRIDE_GFX_VERSION",
+        "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF", "PYTORCH_TUNABLEOP_ENABLED",
+        "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "TORCH_BLAS_PREFER_HIPBLASLT", "MIOPEN_FIND_MODE",
+    ]
+
+    @staticmethod
+    def get_info() -> list[str]:
+        """
+        What PyTorch sees: its CUDA or ROCm build, each GPU's name, architecture and memory, and which
+        bitsandbytes library loaded. Plus the system ROCm version and the GPU environment variables that are set.
+        """
+        lines = []
+        try:
+            result = Utility.subprocess_run([sys.executable, "-c", TorchGPUInfo.PROBE], timeout=180)
+            info = json.loads(result.stdout.strip().splitlines()[-1])
+            build = f"ROCm/HIP {info['hip']}" if info["hip"] else f"CUDA {info['cuda']}" if info["cuda"] else "CPU only"
+            lines.append(f"PyTorch: {info['torch']} ({build})")
+            if info["devices"]:
+                lines += [f"Device {i}: {device}" for i, device in enumerate(info["devices"])]
+            else:
+                lines.append("No GPU available to PyTorch")
+            lines.append(f"bitsandbytes: {info['bitsandbytes']}")
+        except subprocess.CalledProcessError as e:
+            stderr_lines = (e.stderr or "").strip().splitlines()
+            lines.append(f"PyTorch GPU query failed: {stderr_lines[-1] if stderr_lines else e}")
+        except subprocess.TimeoutExpired as e:
+            lines.append(f"PyTorch GPU query failed: no answer after {e.timeout:.0f} seconds")
+        except Exception as e:
+            lines.append(f"PyTorch GPU query failed: {type(e).__name__}: {e}")
+
+        rocm_version_file = Path("/opt/rocm/.info/version")
+        if rocm_version_file.is_file():
+            try:
+                lines.append(f"System ROCm (/opt/rocm): {rocm_version_file.read_text().strip()}")
+            except OSError as e:
+                lines.append(f"System ROCm (/opt/rocm): unreadable ({e})")
+
+        env = [f"{name}={os.environ[name]}" for name in TorchGPUInfo.ENV_VARS if name in os.environ]
+        lines.append(f"GPU environment variables: {', '.join(env) if env else 'none set'}")
+        return lines
+
+
 class SoftwareInfo:
     @staticmethod
     def get_python_info() -> dict[str, Any]:
@@ -993,6 +1059,9 @@ class ReportBuilder:
             report.append("No GPUs detected.")
         report.extend(
             [
+                "",
+                "=== PyTorch GPU Runtime ===",
+                *TorchGPUInfo.get_info(),
                 "",
                 "=== Python Environment ===",
                 f"Global Python Version: {python_info.get('PythonVersion', 'Unavailable')}",

@@ -24,7 +24,9 @@ from modules.util.compile_util import init_compile, reset_compile
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.dtype_util import create_grad_scaler, enable_grad_scaling
+from modules.util.enum.AttentionMechanism import AttentionMechanism
 from modules.util.enum.ConceptType import ConceptType
+from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.FileType import FileType
 from modules.util.enum.ModelFormat import ModelFormat
@@ -32,7 +34,7 @@ from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.profiling_util import PeakMemoryRecorder, TorchMemoryRecorder, TorchProfiler
 from modules.util.time_util import get_string_timestamp
-from modules.util.torch_util import torch_gc
+from modules.util.torch_util import fp8_matmul_supported, torch_gc
 from modules.util.TrainProgress import TrainProgress
 
 import torch
@@ -94,6 +96,8 @@ class GenericTrainer(BaseTrainer):
                 f"Output format {self.config.output_model_format} can't save {self.config.training_method} training of "
                 f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
             )
+        self.__check_device_support()
+        create.check_optimizer_config(self.config.optimizer)
 
         if multi.is_master():
             self.__save_config_to_workspace()
@@ -185,6 +189,30 @@ class GenericTrainer(BaseTrainer):
         if self.config.validation:
             self.validation_data_loader = self.create_data_loader(
                 self.model, self.model_setup, self.model.train_progress, is_validation=True
+            )
+
+    def __check_device_support(self):
+        # settings the GPU or the PyTorch build can't run fail only at the model's first forward pass, after the
+        # model is loaded and the cache is built
+        if self.config.attention_mechanism == AttentionMechanism.CUDNN and torch.version.hip is not None:
+            raise ValueError(
+                "cuDNN attention is NVIDIA-only, and this PyTorch is built for ROCm. Select torch SDPA, which uses the "
+                "attention kernels PyTorch has for AMD GPUs."
+            )
+
+        fp8_parts = []
+        for part in self.config.model_type.model_parts():
+            weight_dtype = getattr(self.config, part).weight_dtype
+            if weight_dtype.quantize_fpW8A8() or weight_dtype == DataType.GGUF_A8_FLOAT:
+                fp8_parts.append(f"{part}: {weight_dtype}")
+        train_device = torch.device(self.config.train_device)
+        if fp8_parts and not fp8_matmul_supported(train_device):
+            device_name = torch.cuda.get_device_name(train_device) if train_device.type == "cuda" else str(train_device)
+            raise ValueError(
+                f"The float W8A8 weight data types ({', '.join(fp8_parts)}) compute in fp8, which {device_name} "
+                f"can't: that needs an NVIDIA GPU with compute capability 8.9 or newer, or an AMD Instinct MI300/MI350 "
+                f"or Radeon RX 9000 series GPU. Use float8 (W8) to store the weights in 8 bits and compute in the "
+                f"train data type, or int W8A8 / GGUF A8 int for int8 compute."
             )
 
     def __save_config_to_workspace(self):
@@ -377,6 +405,10 @@ class GenericTrainer(BaseTrainer):
 
             self.callbacks.on_update_status("Calculating validation loss")
             self.model_setup.setup_train_device(self.model, self.config)
+            # evaluated like samples: without dropout, and on the weights that are sampled and saved (schedule-free
+            # optimizers train on an interpolated point and switch to their averaged weights for evaluation)
+            self.model.eval()
+            self.__before_eval()
 
             torch_gc()
 
@@ -422,6 +454,11 @@ class GenericTrainer(BaseTrainer):
 
                 accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
                 concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
+
+            self.model_setup.setup_train_device(self.model, self.config)
+            if self.config.optimizer.optimizer.is_schedule_free:
+                torch.clear_autocast_cache()
+                self.model.optimizer.train()
 
             for concept_seed, total_loss in accumulated_loss_per_concept.items():
                 average_loss = total_loss / concept_counts[concept_seed]
@@ -798,9 +835,11 @@ class GenericTrainer(BaseTrainer):
                         # checked before the optimizer step: a NaN loss means NaN gradients, which would go into the
                         # weights and the optimizer state (and can crash the GPU runtime). The loss is already reduced
                         # over all GPUs, so every rank stops. A fused back pass has already applied them by now.
+                        # An infinite loss does the same damage, except with fp16 training, whose grad scaler skips
+                        # steps with infinite gradients itself.
                         accumulated_loss_cpu = accumulated_loss.item()
-                        if math.isnan(accumulated_loss_cpu):
-                            raise RuntimeError("Training loss became NaN. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
+                        if math.isnan(accumulated_loss_cpu) or (math.isinf(accumulated_loss_cpu) and not (scaler and scaler.is_enabled())):
+                            raise RuntimeError(f"Training loss became {'NaN' if math.isnan(accumulated_loss_cpu) else 'infinite'}. This may be due to invalid parameters, precision issues, or a bug in the loss computation.")
 
                         if self.config.fused_gradient_reduce:
                             multi.finish_async(self.config.gradient_reduce_precision)

@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import re
 from abc import ABCMeta, abstractmethod
@@ -9,6 +11,7 @@ from modules.model.BaseModel import BaseModel
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.util import path_util
+from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.DataType import DataType
 from modules.util.TrainProgress import TrainProgress
@@ -378,6 +381,39 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         return modules
 
 
+    @staticmethod
+    def _bucket_resolution_error(resolutions: str, quantization: int) -> str | None:
+        # mgds' AspectBucketing rounds every bucket side to a multiple of `quantization`, so a side can become 0 px and
+        # it then divides by zero when the epoch starts. Same parsing and rounding as there.
+        if 'x' in resolutions and ',' not in resolutions:
+            sides = [int(side) for side in resolutions.strip().split('x')]
+            if min(round(side / quantization) for side in sides) < 1:
+                return f"a side of {quantization / 2:g} px or less rounds to 0 px. Each side has to be more than {quantization / 2:g} px"
+            return None
+        for target in (int(res.strip()) for res in resolutions.split(',')):
+            for h, w in AspectBucketing.all_possible_input_aspects:
+                short_side = min(h, w) / math.sqrt(h * w) * target
+                if round(short_side / quantization) < 1:
+                    smallest = next(t for t in range(target, 8 * quantization) if all(
+                        round(min(h, w) / math.sqrt(h * w) * t / quantization) >= 1
+                        for h, w in AspectBucketing.all_possible_input_aspects))
+                    return f"at {target} px the narrowest aspect bucket (1:4) rounds to 0 px. The smallest resolution is {smallest}"
+        return None
+
+    def _check_bucket_resolutions(self, config: TrainConfig, quantization: int):
+        checks = [("The resolution", config.resolution)]
+        concepts = config.concepts
+        if concepts is None:
+            with open(config.concept_file_name, 'r') as f:
+                concepts = [ConceptConfig.default_values().from_dict(c) for c in json.load(f)]
+        checks += [(f"The resolution override of concept '{concept.name or concept.path}'", concept.image.resolution_override)
+                   for concept in concepts if concept.enabled and concept.image.enable_resolution_override]
+        for where, resolutions in checks:
+            error = self._bucket_resolution_error(resolutions, quantization)
+            if error is not None:
+                raise ValueError(f"{where} {resolutions!r} is too small. Images are bucketed in multiples of "
+                                 f"{quantization} px, and {error}.")
+
     def _create_dataset(
             self,
             config: TrainConfig,
@@ -391,6 +427,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
             vae_frame_dim: bool=False,
             supports_inpainting: bool=True, #TODO many models probably don't support inpainting, but this has been enabled in most dataloaders before refactoring, too
     ):
+        self._check_bucket_resolutions(config, aspect_bucketing_quantization)
         enumerate_input = self._enumerate_input_modules(config, allow_videos=allow_video_files)
         load_input = self._load_input_modules(config, model.train_dtype, vae_frame_dim=vae_frame_dim)
         mask_augmentation = self._mask_augmentation_modules(config)

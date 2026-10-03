@@ -31,3 +31,7 @@ def script_imports(allow_zluda: bool = True):
             from modules.zluda import ZLUDA
 
             ZLUDA.initialize()
+
+    # RDNA3 under ROCm: attention with heads above 256 (every VAE) goes to the math kernel, see rocm_sdpa_fix
+    from modules.util import rocm_sdpa_fix
+    rocm_sdpa_fix.install()

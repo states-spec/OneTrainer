@@ -110,6 +110,7 @@ All functionality is split into different scripts located in the `scripts` direc
 -   `generate_captions.py` A utility to automatically create captions for your dataset
 -   `generate_masks.py` A utility to automatically create masks for your dataset
 -   `calculate_loss.py` A utility to calculate the training loss of every image in your dataset
+-   `rocm_check.py` Checks and measures the GPU setup (ROCm or CUDA): kernel correctness, the training code on the GPU, and speed per model family. See [docs/GpuCheck.md](docs/GpuCheck.md)
 
 To learn more about the different parameters, execute `<script-name> -h`. For example `python scripts\train.py -h`
 

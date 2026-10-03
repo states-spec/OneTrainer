@@ -3,7 +3,7 @@ import random
 from typing import Any
 
 from modules.util.config.TrainConfig import TrainConfig, TrainModelPartConfig
-from modules.util.quantization_util import get_offload_tensor_bytes, offload_quantized
+from modules.util.quantization_util import get_offload_tensor_bytes, get_offload_tensors, offload_quantized
 from modules.util.torch_util import (
     create_stream_context,
     device_equals,
@@ -677,22 +677,20 @@ class LayerOffloadConductor:
             self.__layers, self.__offload_strategy.max_offloaded_bytes)
         self.__module_to_device_except_layers(self.__train_device)
 
-        # move all layers to the train device, then move offloadable tensors back to the temp device
+        # the offloadable tensors of each layer go straight into the static cache of the device the layer starts on, the
+        # rest of the layer to the train device
         for layer_index, layer in enumerate(self.__layers):
             if self.__layer_device_map[layer_index] is None:
                 log(f"layer {layer_index} to train device")
-                layer.to(self.__train_device)
 
                 if layer_index in self.__offload_strategy.initial_loaded_layers:
                     allocator = self.__train_device_layer_allocator.get_allocator(
                         layer_index, allocate_forward=True)
-                    for module in layer.modules():
-                        offload_quantized(module, self.__train_device, allocator=allocator.allocate_like)
+                    self.__layer_to_device(layer, self.__train_device, allocator)
                     self.__layer_device_map[layer_index] = self.__train_device
                 else:
                     allocator = self.__temp_device_layer_allocator.get_allocator(layer_index, allocate_forward=True)
-                    for module in layer.modules():
-                        offload_quantized(module, self.__temp_device, allocator=allocator.allocate_like)
+                    self.__layer_to_device(layer, self.__temp_device, allocator)
                     self.__layer_device_map[layer_index] = self.__temp_device
 
                 if self.__async_transfer:
@@ -812,6 +810,29 @@ class LayerOffloadConductor:
 
     def __get_loaded_layers(self) -> list[int]:
         return [i for i in range(len(self.__layers)) if device_equals(self.__layer_device_map[i], self.__train_device)]
+
+    def __layer_to_device(
+            self,
+            layer: nn.Module,
+            offload_device: torch.device,
+            allocator: StaticLayerTensorAllocator,
+    ):
+        # Copies the layer's offloadable tensors (Linear/Conv weights, ...) from wherever they are into `allocator`'s
+        # static cache on `offload_device`, and moves the rest of the layer to the train device. This used to move the
+        # whole layer to the train device first: every loaded layer was then allocated there twice for a moment, and
+        # every offloaded layer went to the train device and back.
+        offload_tensor_ids = set()
+        for module in layer.modules():
+            offload_quantized(module, offload_device, allocator=allocator.allocate_like)
+            offload_tensor_ids.update(id(tensor) for tensor in get_offload_tensors(module))
+
+        def convert(t):
+            if id(t) in offload_tensor_ids or t.is_meta:
+                return t
+
+            return t.to(device=self.__train_device)
+
+        layer._apply(convert)
 
     def __module_to_device_except_layers(
             self,

@@ -13,7 +13,7 @@ class PySide6ConvertModelUIView(BaseConvertModelUIView, QDialog):
 
         self.controller = controller
         self.ui_state = PySide6UIState(controller.convert_model_args)
-        self._dynamic_frame = None
+        self._dynamic_widgets = []
 
         self.setWindowTitle("Convert models")
         self.resize(600, 380)
@@ -32,14 +32,13 @@ class PySide6ConvertModelUIView(BaseConvertModelUIView, QDialog):
         self._layout.setRowStretch(self._layout.rowCount(), 1)
 
     def _rebuild_dynamic_ui(self, *args):
-        if self._dynamic_frame is not None:
-            self._dynamic_frame.hide()
-            self._dynamic_frame.deleteLater()
+        for widget in self._dynamic_widgets:
+            widget.hide()
+            widget.deleteLater()
 
-        self._dynamic_frame = QWidget(self._frame)
-        self._layout.addWidget(self._dynamic_frame, 4, 0, 1, 2)
-
-        self.build_dynamic_content(self._dynamic_frame, self.controller, self.ui_state)
+        before = set(self._frame.children())
+        self.build_dynamic_content(self._frame, self.controller, self.ui_state)
+        self._dynamic_widgets = [c for c in self._frame.children() if c not in before and isinstance(c, QWidget)]
 
     def set_converting(self, active):
         self.button.setEnabled(not active)

@@ -27,6 +27,10 @@
 
 - `OT_CUDA_LOWMEM_MODE`: If set to `true`, it enables aggressive garbage collection in PyTorch to help with low-memory GPUs. Defaults to `false`.
 
+- `OT_EXPANDABLE_SEGMENTS`: If set to `true`, PyTorch maps GPU memory in growable segments (`expandable_segments:True`), so memory freed by one model part (for example the transformer, while the text encoder runs for sampling) can be reused for another without fragmenting. Helps when an out-of-memory error says that much memory is "reserved by PyTorch but unallocated". Can be combined with `OT_CUDA_LOWMEM_MODE`. Linux only. Defaults to `false`, because PyTorch has no fallback: on a GPU or driver without virtual memory support every allocation fails. Check yours once before using it, from the OneTrainer folder: `env PYTORCH_ALLOC_CONF=expandable_segments:True venv/bin/python -c "import torch; x = torch.ones(2**28, device='cuda'); print('expandable segments work:', x.sum().item())"` (use `conda_env/bin/python` with Conda). It should print `expandable segments work: 268435456.0`. That only shows it allocates. On an AMD RX 7900 XTX (ROCm 7.2, torch 2.13) it gives wrong results (VAE encodes, convolution gradients, layer offloading), so don't use it there; on other AMD GPUs run `./run-cmd.sh rocm_check --only allocator` first and use it only if that check passes.
+
+- `OT_LOG_VRAM`: If set to `true`, OneTrainer prints the GPU memory use every time it loads or unloads a model part (caching, sampling, backups), to find the step that runs out of memory. Defaults to `false`.
+
 - `OT_PLATFORM_REQUIREMENTS`: Allows you to override which platform-specific "requirements" file you want to install. Defaults to `detect`, which automatically detects whether you have an AMD or NVIDIA GPU. But people with multi-GPU systems can use this setting to force a specific GPU acceleration framework's requirements. Valid values are `requirements-rocm.txt` for AMD, `requirements-cuda.txt` for NVIDIA, and `requirements-default.txt` for non-AMD/NVIDIA systems.
 
 - `OT_SCRIPT_DEBUG`: If set to `true`, it enables additional debug logging in the scripts. Defaults to `false`.

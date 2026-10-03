@@ -204,6 +204,81 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
                     state[key] = saved_value.to(device=value.device, copy=True)
 
 
+# adv_optm 2.5.13's Prodigy_adv keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
+# (exp_avg.lerp_(grad, 1 - coef)). That term is 1/d times too large, so every step moves each weight by about
+# 0.1 * lr whatever d is: at lr 1 a LoRA turned to noise within the first steps. The other adv_optm optimizers keep
+# their momentum in gradient units and are not affected.
+_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13): it moves every weight by about "
+                         "0.1 x the learning rate per step regardless of Prodigy's step size, which destroys the model. "
+                         "Turn Nesterov off for PRODIGY_ADV")
+
+
+def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
+    # settings known to break training; GenericTrainer.start calls it before the model loads
+    if optimizer_config.optimizer == Optimizer.PRODIGY_ADV and optimizer_config.nesterov:
+        raise ValueError(_PRODIGY_ADV_NESTEROV + ".")
+
+
+def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
+    # a resumed group keeps the backup's settings, so a backup made with Nesterov on would still use it
+    if any(group.get('nesterov') for group in optimizer.param_groups):
+        print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The backup was made with it on; it is turned off for this run.")
+        for group in optimizer.param_groups:
+            group['nesterov'] = False
+
+
+def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
+    # adv_optm creates the Kourkoutas-beta helper only in the constructor, when kourkoutas_beta is set there, but each
+    # step reads the flag from the param group. A resumed group keeps the backup's flag, so resuming a Kourkoutas
+    # backup with the option turned off failed in the first step ("no attribute 'kourkoutas_helper'").
+    if getattr(optimizer, 'kourkoutas_helper', None) is None and any(
+            group.get('kourkoutas_beta') or group.get('adam_kourkoutas_beta') for group in optimizer.param_groups):
+        from adv_optm.util.Kourkoutas import KourkoutasHelper
+        optimizer.kourkoutas_helper = KourkoutasHelper(optimizer)
+
+
+def _drop_mismatched_kourkoutas_state(optimizer: torch.optim.Optimizer):
+    # Kourkoutas-beta keeps one running gradient norm per layer, per row for tagged LoRA/OFT parameters (see
+    # tag_util). A backup made before the parameters were tagged has one value per layer, which fails in the first
+    # step ("output with shape [] doesn't match the broadcast shape [8, 1]"). Those averages are dropped and rebuilt.
+    dropped = 0
+    for p, state in optimizer.state.items():
+        r_ema = state.get('kourkoutas_r_ema')
+        if r_ema is None:
+            continue
+        if getattr(p, '_is_oft', False) or getattr(p, '_is_lora_A', False):
+            shape = (p.shape[0], 1)
+        elif getattr(p, '_is_lora_B', False):
+            shape = (1, p.shape[1])
+        else:
+            shape = ()
+        if tuple(r_ema.shape) != shape:
+            del state['kourkoutas_r_ema']
+            dropped += 1
+    if dropped:
+        print(f"Warning: the backup's Kourkoutas-beta averages of {dropped} parameters were made before the adapter "
+              f"parameters were tagged for adv_optm. They are reset and rebuilt over the next steps.")
+
+
+# param group keys that hold a setting from the config (TrainOptimizerConfig fields, plus the ones the optimizers
+# name differently); the other keys are the optimizer's own running values, like Prodigy's d
+_OPTIMIZER_SETTING_ALIASES = {"betas", "compiled_optimizer"}
+
+
+def _changed_optimizer_settings(group_name: str, saved_group: dict, new_group: dict) -> list[str]:
+    # "k" is also Prodigy's step counter
+    settings = (set(TrainOptimizerConfig.default_values().types) | _OPTIMIZER_SETTING_ALIASES) - {"optimizer", "k"}
+    changed = []
+    for key in sorted(settings & saved_group.keys() & new_group.keys()):
+        try:
+            differs = bool(saved_group[key] != new_group[key])
+        except (RuntimeError, TypeError, ValueError):
+            continue
+        if differs:
+            changed.append(f"{group_name}.{key}: backup {saved_group[key]!r}, config {new_group[key]!r}")
+    return changed
+
+
 def create_optimizer(
         parameter_group_collection: NamedParameterGroupCollection,
         state_dict: dict | None,
@@ -794,6 +869,7 @@ def create_optimizer(
         # PRODIGY_ADV Optimizer
         case Optimizer.PRODIGY_ADV:
             from adv_optm import Prodigy_adv
+            check_optimizer_config(optimizer_config)
             optimizer = Prodigy_adv(
                 params=parameters,
                 lr=config.learning_rate,
@@ -1149,6 +1225,7 @@ def create_optimizer(
             state = {}
             param_groups = []
             state_index = 0
+            changed_settings = []
 
             for new_group_index, unique_group_name in enumerate(new_group_mapping):
                 if (unique_group_name in old_group_mapping and str(config.optimizer.optimizer) ==
@@ -1157,6 +1234,7 @@ def create_optimizer(
                     old_group_index = old_group_mapping.index(unique_group_name)
                     new_group = new_param_groups[new_group_index]
                     old_group = old_param_groups[old_group_index]
+                    changed_settings += _changed_optimizer_settings(unique_group_name, old_group, new_group)
                     for i, old_state_index in enumerate(old_group['params']):
                         if old_state_index in old_state:
                             state[state_index] = old_state[old_state_index]
@@ -1179,6 +1257,11 @@ def create_optimizer(
             state_dict['state'] = state
             state_dict['param_groups'] = param_groups
 
+            if changed_settings:
+                print("Warning: these optimizer settings differ between the backup and the config. The training "
+                      "continues with the backup's values (only the learning rate is taken from the config); start "
+                      "without the backup to use the new ones:\n  " + "\n  ".join(changed_settings))
+
         if optimizer_config.optimizer.is_adv_optm:
             # adv_optm 2.5 reads this group key when loading, but only sets it for groups with non-factored states
             # (never for Lion_adv or state_precision="factored"), so those states could not be resumed
@@ -1193,6 +1276,10 @@ def create_optimizer(
 
         if optimizer_config.optimizer.is_adv_optm:
             _restore_adv_optm_state_dtypes(optimizer, state_dict)
+            _restore_kourkoutas_helper(optimizer)
+            _drop_mismatched_kourkoutas_state(optimizer)
+            if optimizer_config.optimizer == Optimizer.PRODIGY_ADV:
+                _disable_prodigy_adv_nesterov(optimizer)
 
     return optimizer
 

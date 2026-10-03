@@ -233,6 +233,33 @@ def torch_gc():
         torch.mps.empty_cache()
 
 
+def vram_summary(device: torch.device) -> str:
+    # one line on how the GPU memory is used: by tensors, held by PyTorch's cache without a tensor in it (reusable, but
+    # only in pieces: fragmentation when large), and still free on the device (other processes, e.g. the desktop, use
+    # the rest)
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return f"no GPU memory statistics for {device}"
+    gib = 2 ** 30
+    allocated = torch.cuda.memory_allocated(device)
+    reserved = torch.cuda.memory_reserved(device)
+    free, total = torch.cuda.mem_get_info(device)
+    return (f"{allocated / gib:.2f} GiB in tensors, {(reserved - allocated) / gib:.2f} GiB more reserved by PyTorch, "
+            f"{free / gib:.2f} GiB free of {total / gib:.2f} GiB on the device")
+
+
+def fp8_matmul_supported(device: torch.device) -> bool:
+    # the float W8A8 layers multiply with torch._scaled_mm, which PyTorch allows only on GPUs with fp8 matrix units
+    # (NVIDIA compute capability 8.9+; AMD gfx942, gfx950, gfx1200/1201). elsewhere, e.g. RDNA3, it raises at the
+    # model's first forward pass. a tiny call like the layers' own finds out.
+    try:
+        a = torch.zeros((32, 32), dtype=torch.float8_e4m3fn, device=device)
+        one = torch.ones((), device=device)
+        torch._scaled_mm(a, a.t(), scale_a=one, scale_b=one, out_dtype=torch.float)
+        return True
+    except (RuntimeError, NotImplementedError):
+        return False
+
+
 def torch_sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()

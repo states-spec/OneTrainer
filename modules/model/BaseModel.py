@@ -1,3 +1,5 @@
+import itertools
+import os
 from abc import ABCMeta
 from contextlib import nullcontext
 from uuid import uuid4
@@ -11,7 +13,7 @@ from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType
 from modules.util.modelSpec.ModelSpec import ModelSpec
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
-from modules.util.torch_util import device_equals, torch_gc
+from modules.util.torch_util import device_equals, torch_gc, vram_summary
 from modules.util.TrainProgress import TrainProgress
 
 import torch
@@ -65,6 +67,13 @@ class BaseModelEmbedding:
             self.vector.requires_grad_(requires_grad)
 
 
+def _log_vram(device: torch.device, when: str):
+    # OT_LOG_VRAM=true prints the GPU memory use at every model part swap (sampling, caching, backups), to find the
+    # moment that runs out of memory
+    if os.environ.get("OT_LOG_VRAM", "").lower() in ("1", "true", "yes"):
+        print(f"VRAM {when}: {vram_summary(device)}")
+
+
 class BaseModel(metaclass=ABCMeta):
     model_type: ModelType
     parameters: NamedParameterGroupCollection | None
@@ -107,14 +116,46 @@ class BaseModel(metaclass=ABCMeta):
 
     def materialize(self, *parts: str):
         # Move `parts` onto train_device.
-        for part in parts:
-            self._move_part(part, self.train_device)
+        part = None
+        try:
+            for part in parts:
+                self._move_part(part, self.train_device)
+        except torch.OutOfMemoryError:
+            # expandable_segments gave wrong results on an RX 7900 XTX (see LAUNCH-SCRIPTS.md), so on ROCm it is only
+            # named with the check that decides whether it is safe
+            expandable = ("OT_EXPANDABLE_SEGMENTS=true can help, but on AMD GPUs only if "
+                          "'./run-cmd.sh rocm_check --only allocator' passes (it gave wrong results on an RX 7900 XTX)"
+                          if torch.version.hip else "launching with OT_EXPANDABLE_SEGMENTS=true can help (see LAUNCH-SCRIPTS.md)")
+            print(f"Out of GPU memory while loading {part} onto {self.train_device} ({vram_summary(self.train_device)}). "
+                  f"{self._part_weights_summary(part)}Less of the model has to stay on the GPU: raise the part's layer "
+                  f"offload fraction, or use a smaller weight data type. If much memory is reserved by PyTorch without "
+                  f"tensors, it is fragmented: {expandable}.")
+            raise
+        _log_vram(self.train_device, f"after loading {', '.join(parts)}")
+
+    def _part_weights_summary(self, part: str) -> str:
+        # e.g. "transformer weights: 33.21 GiB (float32). " -- a part left at the FLOAT_32 default weight dtype is the
+        # usual reason a model that fits in bf16 doesn't fit
+        stem = f"{part}_1" if hasattr(self, f"{part}_1") else part
+        component = getattr(self, stem, None)
+        if not isinstance(component, torch.nn.Module):
+            return ""
+        by_dtype = {}
+        for tensor in itertools.chain(component.parameters(), component.buffers()):
+            by_dtype[tensor.dtype] = by_dtype.get(tensor.dtype, 0) + tensor.numel() * tensor.element_size()
+        if not by_dtype:
+            return ""
+        total = sum(by_dtype.values()) / 2**30
+        dtypes = ", ".join(f"{str(dtype).removeprefix('torch.')} {size / 2**30:.2f} GiB"
+                           for dtype, size in sorted(by_dtype.items(), key=lambda x: -x[1]))
+        return f"{part} weights: {total:.2f} GiB ({dtypes}); its weight data type is set per part on the model tab. "
 
     def evict(self, *parts: str):
         # Move `parts` onto temp_device. No parts given -> every component in ModelType.model_parts().
         for part in parts or self.model_type.model_parts():
             self._move_part(part, self.temp_device)
         torch_gc()
+        _log_vram(self.train_device, f"after unloading {', '.join(parts) if parts else 'all parts'}")
 
     def materialize_only(self, *parts: str):
         # Materialize exactly `parts` on train_device; evict every other component in ModelType.model_parts()

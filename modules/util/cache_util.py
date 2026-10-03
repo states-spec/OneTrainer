@@ -5,6 +5,9 @@ import re
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.path_util import write_json_atomic
+from modules.util.rocm_sdpa_fix import applies_to as rocm_sdpa_fix_applies_to
+
+import torch
 
 CACHE_SETTINGS_FILE = "cache_settings.json"
 
@@ -53,6 +56,8 @@ def cache_settings(config: TrainConfig) -> dict:
                           if _TEXT_ENCODER_SETTING.fullmatch(name)},
         "train_text_encoder_or_embedding": config.train_text_encoder_or_embedding(),
         "embeddings": embeddings,
+        # latents cached on RDNA3 before the VAE attention fix are wrong; None elsewhere, as in older records
+        "vae_attention": "math above head dim 256" if rocm_sdpa_fix_applies_to(torch.device(config.train_device)) else None,
     }
 
 

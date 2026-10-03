@@ -50,16 +50,28 @@ class BaseUIState(ABC):
                 state = state.get_var(name_part)
             return state
 
+    def __trace_owner(self, name) -> tuple["BaseUIState", str]:
+        # a dotted name ("quantization.layer_filter_preset") belongs to the nested state, which calls the traces when
+        # its var is written; stored here, they were never called
+        state = self
+        *parents, name = name.split('.')
+        for part in parents:
+            state = state.get_var(part)
+        return state, name
+
     def add_var_trace(self, name, command: Callable[[], None]) -> int:
-        self.__latest_var_trace_id += 1
-        self.__var_traces[name][self.__latest_var_trace_id] = command
-        return self.__latest_var_trace_id
+        state, name = self.__trace_owner(name)
+        state.__latest_var_trace_id += 1
+        state.__var_traces[name][state.__latest_var_trace_id] = command
+        return state.__latest_var_trace_id
 
     def remove_var_trace(self, name, trace_id):
-        self.__var_traces[name].pop(trace_id)
+        state, name = self.__trace_owner(name)
+        state.__var_traces[name].pop(trace_id)
 
     def remove_all_var_traces(self, name):
-        self.__var_traces[name] = {}
+        state, name = self.__trace_owner(name)
+        state.__var_traces[name] = {}
 
     def __call_var_traces(self, name):
         for trace in self.__var_traces[name].values():

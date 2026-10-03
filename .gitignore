@@ -36,5 +36,9 @@ pixi.toml
 /src
 train.bat
 debug_report.log
+rocm_check_report.txt
+rocm_check_report.json
+rocm_check_tunableop*.csv
+rocm_check_miopen_db/
 config_diff.txt
 CLAUDE.md

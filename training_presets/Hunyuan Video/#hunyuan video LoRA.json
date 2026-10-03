@@ -26,6 +26,6 @@
         "train": false,
         "weight_dtype": "FLOAT_8"
     },
-    "layer_filter": "transformer_blocks",
+    "layer_filter": "transformer_block",
     "layer_filter_preset": "blocks"
 }

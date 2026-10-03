@@ -397,8 +397,7 @@ class BaseTrainingTabView(ABC):
 
         # ema stochastic rounding
         self.components.label(frame, row, 0, "EMA Stochastic Rounding",
-                              tooltip="Uses stochastic rounding for the EMA update when the EMA weights are stored in bfloat16 (weights trained in bfloat16). Without it, most EMA updates are smaller than bfloat16's precision and get lost. No effect on float32 weights.",
-                              wraplength=130)
+                              tooltip="Uses stochastic rounding for the EMA update when the EMA weights are stored in bfloat16 (weights trained in bfloat16). Without it, most EMA updates are smaller than bfloat16's precision and get lost. No effect on float32 weights.")
         self.components.switch(frame, row, 1, ui_state, "ema_stochastic_rounding")
         row += 1
 

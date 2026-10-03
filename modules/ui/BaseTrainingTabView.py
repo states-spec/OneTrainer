@@ -744,6 +744,12 @@ class BaseTrainingTabView(ABC):
         self.components.entry(frame, row, 1, ui_state, "ciop_p")
         row += 1
 
+        # CEP gamma
+        self.components.label(frame, row, 0, "Text Embedding Noise",
+                              tooltip="Conditional Embedding Perturbation (CEP): adds slight uniform noise to the text encoder outputs in each training step, scaled by 1/sqrt(embedding size). The paper uses 1. 0 disables it.")
+        self.components.entry(frame, row, 1, ui_state, "cep_gamma")
+        row += 1
+
         # perturbation noise weight
         self.components.label(frame, row, 0, "Perturbation Noise Weight",
                               tooltip="The weight of perturbation noise added to each training step")

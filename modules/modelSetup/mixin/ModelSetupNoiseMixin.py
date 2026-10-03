@@ -120,6 +120,27 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
 
         return noise
 
+    @staticmethod
+    def _apply_conditional_embedding_perturbation(
+            embedding: Tensor | list[Tensor],
+            gamma: float,
+            generator: Generator,
+    ) -> Tensor | list[Tensor]:
+        """
+        Applies Conditional Embedding Perturbation (CEP-U) as per Equation (8).
+        Paper: "Slight Corruption in Pre-training Data Makes Better Diffusion Models"
+
+        Adds delta ~ U(-gamma/sqrt(d), gamma/sqrt(d)) to the text encoder output, d being its last dimension.
+        """
+        def _perturb(tensor: Tensor) -> Tensor:
+            scale = gamma / math.sqrt(tensor.shape[-1])
+            noise = torch.rand(tensor.shape, generator=generator, device=tensor.device, dtype=tensor.dtype)
+            return tensor + (noise * 2.0 - 1.0) * scale
+
+        if isinstance(embedding, list):
+            return [_perturb(emb) for emb in embedding]
+        return _perturb(embedding)
+
     def _apply_ciop(
             self,
             noisy_latent: Tensor,

@@ -387,6 +387,10 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
+        if self.training_tab:
+            # its masking settings depend on the training method
+            self.training_tab.refresh_ui()
+
         if self.lora_tab:
             self.lora_tab.refresh_ui()
         if 'embedding' in self._tab_widgets:

@@ -1,14 +1,23 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Any
 
 from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.LearningRateScaler import LearningRateScaler
 from modules.util.enum.LearningRateScheduler import LearningRateScheduler
 from modules.util.enum.LossScaler import LossScaler
-from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.enum.TimestepDistribution import TimestepDistribution
+from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui.validation_helpers import check_range, validate_resolution
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class BaseTrainingTabView(ABC):
@@ -382,24 +391,25 @@ class BaseTrainingTabView(ABC):
         row += 1
 
         # ema decay
-        self.components.label(frame, row, 0, "EMA Decay",
-                              tooltip="Decay parameter of the EMA model. Higher numbers will average more steps. For datasets of hundreds or thousands of images, set this to 0.9999. For smaller datasets, set it to 0.999 or even 0.998")
-        self.components.entry(frame, row, 1, ui_state, "ema_decay",
+        ema_settings = [self.components.label(frame, row, 0, "EMA Decay",
+                              tooltip="Decay parameter of the EMA model. Higher numbers will average more steps. For datasets of hundreds or thousands of images, set this to 0.9999. For smaller datasets, set it to 0.999 or even 0.998")]
+        ema_settings.append(self.components.entry(frame, row, 1, ui_state, "ema_decay",
                               extra_validate=check_range(lower=0.5, upper=1,
-                                                        message="EMA decay must be between 0.5 and 1"))
+                                                        message="EMA decay must be between 0.5 and 1")))
         row += 1
 
         # ema update step interval
-        self.components.label(frame, row, 0, "EMA Update Step Interval",
-                              tooltip="Number of steps between EMA update steps")
-        self.components.entry(frame, row, 1, ui_state, "ema_update_step_interval")
+        ema_settings.append(self.components.label(frame, row, 0, "EMA Update Step Interval",
+                              tooltip="Number of steps between EMA update steps"))
+        ema_settings.append(self.components.entry(frame, row, 1, ui_state, "ema_update_step_interval"))
         row += 1
 
         # ema stochastic rounding
-        self.components.label(frame, row, 0, "EMA Stochastic Rounding",
-                              tooltip="Uses stochastic rounding for the EMA update when the EMA weights are stored in bfloat16 (weights trained in bfloat16). Without it, most EMA updates are smaller than bfloat16's precision and get lost. No effect on float32 weights.")
-        self.components.switch(frame, row, 1, ui_state, "ema_stochastic_rounding")
+        ema_settings.append(self.components.label(frame, row, 0, "EMA Stochastic Rounding",
+                              tooltip="Uses stochastic rounding for the EMA update when the EMA weights are stored in bfloat16 (weights trained in bfloat16). Without it, most EMA updates are smaller than bfloat16's precision and get lost. No effect on float32 weights."))
+        ema_settings.append(self.components.switch(frame, row, 1, ui_state, "ema_stochastic_rounding"))
         row += 1
+        self._enable_while(ui_state, "ema", lambda value: str(value) != str(EMAMode.OFF), ema_settings)
 
         # train dtype
         self.components.label(frame, row, 0, "Train Data Type",
@@ -732,10 +742,12 @@ class BaseTrainingTabView(ABC):
 
         if supports_generalized_offset_noise:
             # generalized offset noise weight
-            self.components.label(frame, row, 0, "Generalized Offset Noise",
-                                  tooltip="Per-timestep 'brightness knob' instead of a fixed offset - steadier training, better starts, and improved very dark/bright images. Compatible with V-pred and Eps-pred. Start with 0.02 and adjust as needed.",
-                                  wraplength=130)
-            self.components.switch(frame, row, 1, ui_state, "generalized_offset_noise")
+            self._enable_while(ui_state, "offset_noise_weight", lambda value: _number(value) > 0, [
+                self.components.label(frame, row, 0, "Generalized Offset Noise",
+                                      tooltip="Per-timestep 'brightness knob' instead of a fixed offset - steadier training, better starts, and improved very dark/bright images. Compatible with V-pred and Eps-pred. Start with 0.02 and adjust as needed. Only used with an Offset Noise Weight above 0.",
+                                      wraplength=130),
+                self.components.switch(frame, row, 1, ui_state, "generalized_offset_noise"),
+            ])
             row += 1
 
         # CIOP noise weight
@@ -745,9 +757,11 @@ class BaseTrainingTabView(ABC):
         row += 1
 
         # CIOP noise probability
-        self.components.label(frame, row, 0, "I/O Noise Probability",
-                         tooltip="The probability of I/O perturbation noise for each training step")
-        self.components.entry(frame, row, 1, ui_state, "ciop_p")
+        self._enable_while(ui_state, "ciop_noise_weight", lambda value: _number(value) != 0, [
+            self.components.label(frame, row, 0, "I/O Noise Probability",
+                                  tooltip="The probability of I/O perturbation noise for each training step. Only used with an I/O Noise Weight other than 0."),
+            self.components.entry(frame, row, 1, ui_state, "ciop_p"),
+        ])
         row += 1
 
         # CEP gamma
@@ -802,9 +816,11 @@ class BaseTrainingTabView(ABC):
         row += 1
 
         # timestep shift
-        self.components.label(frame, row, 0, "Timestep Shift",
-                              tooltip="Shift the timestep distribution. Use the preview to see more details.")
-        self.components.entry(frame, row, 1, ui_state, "timestep_shift", required=True)
+        timestep_shift = [
+            self.components.label(frame, row, 0, "Timestep Shift",
+                                  tooltip="Shift the timestep distribution. Use the preview to see more details. Ignored while Dynamic Timestep Shifting is on."),
+            self.components.entry(frame, row, 1, ui_state, "timestep_shift", required=True),
+        ]
         row += 1
 
         if supports_dynamic_timestep_shifting:
@@ -813,42 +829,65 @@ class BaseTrainingTabView(ABC):
                                   tooltip="Dynamically shift the timestep distribution based on resolution. If enabled, the shifting parameters are taken from the model's scheduler configuration and Timestep Shift is ignored. For Ideogram, the shifting instead follows the model's own resolution-aware sampling schedule. Note: For Z-Image, the dynamic shifting parameters are likely wrong and unknown. Use with care or set your own, fixed shift.", wide_tooltip=True)
             self.components.switch(frame, row, 1, ui_state, "dynamic_timestep_shifting")
             row += 1
+            self._enable_while(ui_state, "dynamic_timestep_shifting", lambda value: not value, timestep_shift)
+
+    def _enable_while(self, ui_state, var_name: str, rule: Callable[[Any], bool], widgets: list):
+        # greys the widgets out while rule(value) is false for the var's value; follows every change, preset loads too
+        def update(*args):
+            enabled = rule(ui_state.get_var(var_name).get())
+            for widget in widgets:
+                self.components.set_widget_enabled(widget, enabled)
+
+        if widgets:
+            self.components.bind_var_trace(widgets[0], ui_state, var_name, update)
+            update()
 
     def __create_masked_frame(self, master, row, ui_state):
         frame = self.components.section_frame(master, row)
+        config = ui_state.obj
+        # inpainting models (mask and conditioning image inputs) train on the unmasked loss and drop the mask at random
+        # (Unmasked Probability); the other models weight the loss with the mask. Settings for the other kind are not
+        # shown. The tab is rebuilt when the model type or the training method changes.
+        conditioning_input = config.model_type.has_conditioning_image_input()
+        needs_masked_training = []
 
         # Masked Training
         self.components.label(frame, 0, 0, "Masked Training",
                               tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample.")
         self.components.switch(frame, 0, 1, ui_state, "masked_training")
 
-        # unmasked probability
-        self.components.label(frame, 1, 0, "Unmasked Probability",
-                              tooltip="When masked training is enabled, specifies the number of training steps done on unmasked samples")
-        self.components.entry(frame, 1, 1, ui_state, "unmasked_probability",
-                              extra_validate=check_range(lower=0, upper=1, message="Unmasked probability must be between 0 and 1"))
+        if config.model_type.has_mask_input():
+            # unmasked probability
+            needs_masked_training.append(self.components.label(frame, 1, 0, "Unmasked Probability",
+                                  tooltip="When masked training is enabled, specifies the number of training steps done on unmasked samples. Only for inpainting models, which take the mask as an input."))
+            needs_masked_training.append(self.components.entry(frame, 1, 1, ui_state, "unmasked_probability",
+                                  extra_validate=check_range(lower=0, upper=1, message="Unmasked probability must be between 0 and 1")))
 
         # unmasked weight
-        self.components.label(frame, 2, 0, "Unmasked Weight",
-                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region")
-        self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
-                              extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1"))
+        needs_masked_training.append(self.components.label(frame, 2, 0, "Unmasked Weight",
+                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region"))
+        needs_masked_training.append(self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
+                              extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1")))
 
         # normalize masked area loss
-        self.components.label(frame, 3, 0, "Normalize Masked Area Loss",
-                              tooltip="When masked training is enabled, normalizes the loss for each sample based on the sizes of the masked region")
-        self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss")
+        needs_masked_training.append(self.components.label(frame, 3, 0, "Normalize Masked Area Loss",
+                              tooltip="When masked training is enabled, normalizes the loss for each sample based on the sizes of the masked region"))
+        needs_masked_training.append(self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss"))
 
-        # masked prior preservation
-        self.components.label(frame, 4, 0, "Masked Prior Preservation Weight",
-                              tooltip="Preserves regions outside the mask using the original untrained model output as a target. Only available for LoRA training. If enabled, use a low unmasked weight.")
-        self.components.entry(frame, 4, 1, ui_state, "masked_prior_preservation_weight",
-                              extra_validate=check_range(lower=0, upper=1, message="Masked prior preservation weight must be between 0 and 1"))
+        if not conditioning_input and config.training_method == TrainingMethod.LORA:
+            # masked prior preservation
+            needs_masked_training.append(self.components.label(frame, 4, 0, "Masked Prior Preservation Weight",
+                                  tooltip="Preserves regions outside the mask using the original untrained model output as a target. Only available for LoRA training. If enabled, use a low unmasked weight."))
+            needs_masked_training.append(self.components.entry(frame, 4, 1, ui_state, "masked_prior_preservation_weight",
+                                  extra_validate=check_range(lower=0, upper=1, message="Masked prior preservation weight must be between 0 and 1")))
 
-        # use custom conditioning image
-        self.components.label(frame, 5, 0, "Custom Conditioning Image",
-                              tooltip="When custom conditioning image is enabled, will use png postfix with -condlabel instead of automatically generated.It's suitable for special scenarios, such as object removal, allowing the model to learn a certain behavior concept")
-        self.components.switch(frame, 5, 1, ui_state, "custom_conditioning_image")
+        if conditioning_input:
+            # use custom conditioning image
+            self.components.label(frame, 5, 0, "Custom Conditioning Image",
+                                  tooltip="When custom conditioning image is enabled, will use png postfix with -condlabel instead of automatically generated. It's suitable for special scenarios, such as object removal, allowing the model to learn a certain behavior concept. Only for inpainting models, which take the conditioning image as an input.")
+            self.components.switch(frame, 5, 1, ui_state, "custom_conditioning_image")
+
+        self._enable_while(ui_state, "masked_training", bool, needs_masked_training)
 
     def __create_loss_frame(self, master, row, controller, ui_state,
                             supports_vb_loss: bool = False):
@@ -888,10 +927,7 @@ class BaseTrainingTabView(ABC):
         # Loss Weight function
         self.components.label(frame, 6, 0, "Loss Weight Function",
                               tooltip="Choice of loss weight function. Can help the model learn details more accurately.")
-        self.components.options(frame, 6, 1, [str(x) for x in list(LossWeight)
-                                              if x.supports_flow_matching() == controller.is_flow_matching()
-                                              or x == LossWeight.CONSTANT
-                                              ],
+        self.components.options(frame, 6, 1, [str(x) for x in controller.config.model_type.supported_loss_weights()],
                                 ui_state, "loss_weight_fn")
 
         row = 7

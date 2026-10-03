@@ -810,6 +810,13 @@ def set_widget_enabled(widget: QWidget, enabled: bool) -> None:
     widget.setEnabled(enabled)
 
 
+def bind_var_trace(widget: QWidget, ui_state: BaseUIState, var_name: str, command: Callable[[], None]) -> None:
+    # runs command after every change of the var, also programmatic ones (a dropdown's command runs only on user
+    # changes), until the widget is destroyed
+    trace_id = ui_state.add_var_trace(var_name, command)
+    widget.destroyed.connect(lambda: ui_state.remove_var_trace(var_name, trace_id))
+
+
 def set_label_text(label: QLabel, text: str) -> None:
     label.setText(str(text))
 

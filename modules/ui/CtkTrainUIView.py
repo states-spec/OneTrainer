@@ -427,6 +427,10 @@ class CtkTrainUIView(BaseTrainUIView, ctk.CTk):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
+        if self.training_tab:
+            # its masking settings depend on the training method
+            self.training_tab.refresh_ui()
+
         if self.lora_tab:
             self.lora_tab.refresh_ui()
 

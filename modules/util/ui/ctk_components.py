@@ -619,6 +619,19 @@ def set_widget_enabled(widget, enabled: bool) -> None:
         widget.configure(state=state)
 
 
+def bind_var_trace(widget, ui_state: CtkUIState, var_name: str, command: Callable[[], None]) -> None:
+    # runs command after every change of the var, also programmatic ones (a dropdown's command runs only on user
+    # changes), until the widget is destroyed
+    trace_id = ui_state.add_var_trace(var_name, command)
+    orig_destroy = widget.destroy
+
+    def destroy():
+        ui_state.remove_var_trace(var_name, trace_id)
+        orig_destroy()
+
+    widget.destroy = destroy  # type: ignore[assignment]
+
+
 def set_label_text(label, text: str) -> None:
     label.configure(text=str(text))
 

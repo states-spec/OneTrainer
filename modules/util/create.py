@@ -154,7 +154,7 @@ def _adv_common_kwargs(optimizer_config: TrainOptimizerConfig, nesterov_default:
         "nesterov_coef": optimizer_config.nesterov_coef,
         "state_precision": state_precision,
         "centered_wd": optimizer_config.centered_wd if optimizer_config.centered_wd is not None else 0.0,
-        "centered_wd_mode": optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "float8",
+        "centered_wd_mode": optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "full",
         "spectral_normalization": optimizer_config.spectral_normalization if optimizer_config.spectral_normalization is not None else False,
     }
 
@@ -947,7 +947,7 @@ def create_optimizer(
                 auto_kappa_p=optimizer_config.auto_kappa_p if optimizer_config.auto_kappa_p is not None else False,
                 stochastic_sign=optimizer_config.stochastic_sign if optimizer_config.stochastic_sign is not None else False,
                 centered_wd=optimizer_config.centered_wd if optimizer_config.centered_wd is not None else 0.0,
-                centered_wd_mode=optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "float8",
+                centered_wd_mode=optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "full",
                 spectral_normalization=optimizer_config.spectral_normalization if optimizer_config.spectral_normalization is not None else False,
                 compiled_optimizer=optimizer_config.compile if optimizer_config.compile is not None else False,
             )

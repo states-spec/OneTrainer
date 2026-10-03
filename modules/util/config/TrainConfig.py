@@ -244,7 +244,7 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("fisher_wd", False, bool, False))
         data.append(("spectral_normalization", False, bool, False))
         data.append(("centered_wd", None, float, True))
-        data.append(("centered_wd_mode", "float8", str, False))  # full, float8, int8, int4
+        data.append(("centered_wd_mode", "full", str, False))  # full, float8, int8, int4
         data.append(("stochastic_sign", False, bool, False))
         data.append(("geometric_wd", False, bool, False))
         data.append(("snr_cond", False, bool, False))
@@ -1117,7 +1117,7 @@ class TrainConfig(BaseConfig):
         data.append(("ema", EMAMode.OFF, EMAMode, False))
         data.append(("ema_decay", 0.999, float, False))
         data.append(("ema_update_step_interval", 5, int, False))
-        data.append(("ema_stochastic_rounding", False, bool, False))
+        data.append(("ema_stochastic_rounding", True, bool, False))
         data.append(("dataloader_threads", 2, int, False))
         data.append(("train_device", default_device.type, str, False))
         data.append(("temp_device", "cpu", str, False))

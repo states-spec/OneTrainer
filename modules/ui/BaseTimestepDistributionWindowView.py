@@ -1,6 +1,4 @@
-
-
-
+from modules.ui import dropdown_hints
 
 
 class BaseTimestepDistributionWindowView:
@@ -10,7 +8,7 @@ class BaseTimestepDistributionWindowView:
     def build_content(self, frame, controller, ui_state):
         # timestep distribution
         self.components.label(frame, 0, 0, "Timestep Distribution",
-                         tooltip="Selects the function to sample timesteps during training",
+                         tooltip=dropdown_hints.TIMESTEP_DISTRIBUTION,
                          wide_tooltip=True)
         self.components.options(frame, 0, 1, controller.get_distribution_options(), ui_state,
                            "timestep_distribution")

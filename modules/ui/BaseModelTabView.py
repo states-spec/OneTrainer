@@ -1,6 +1,7 @@
 
 from abc import ABC, abstractmethod
 
+from modules.ui import dropdown_hints
 from modules.util import path_util
 from modules.util.enum.ConfigPart import ConfigPart
 from modules.util.enum.DataType import DataType
@@ -154,7 +155,7 @@ class BaseModelTabView(ABC):
         if has_unet:
             # unet weight dtype
             self.components.label(frame, row, 3, "UNet Data Type",
-                             tooltip="The unet weight data type")
+                             tooltip="The unet weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(include_a8=True, include_compressed=include_compressed),
                                   ui_state, "unet.weight_dtype")
 
@@ -172,7 +173,7 @@ class BaseModelTabView(ABC):
 
             # prior weight dtype
             self.components.label(frame, row, 3, "Prior Data Type",
-                             tooltip="The prior weight data type")
+                             tooltip="The prior weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "prior.weight_dtype")
 
@@ -190,7 +191,7 @@ class BaseModelTabView(ABC):
 
             # transformer weight dtype
             self.components.label(frame, row, 3, "Transformer Data Type",
-                             tooltip="The transformer weight data type")
+                             tooltip="The transformer weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(include_gguf=True, include_a8=True, include_compressed=include_compressed),
                                   ui_state, "transformer.weight_dtype")
 
@@ -222,7 +223,7 @@ class BaseModelTabView(ABC):
         # SVDQuant - create vertical grids to match the size of layer_filter_entry
         svd_label_frame, svd_entry_frame = self._make_svd_frames(frame, row)
         self.components.label(svd_label_frame, 0, 0, "SVDQuant",
-                         tooltip="What datatype to use for SVDQuant weights decomposition.")
+                         tooltip=dropdown_hints.SVD_DTYPE, wide_tooltip=True)
         self.components.options_kv(svd_entry_frame, 0, 0, [("disabled", DataType.NONE), ("float32", DataType.FLOAT_32), ("bfloat16", DataType.BFLOAT_16)],
                               ui_state, "quantization.svd_dtype")
         self.components.label(svd_label_frame, 1, 0, "SVDQuant Rank",
@@ -233,7 +234,7 @@ class BaseModelTabView(ABC):
         if has_text_encoder:
             # text encoder weight dtype
             self.components.label(frame, row, 3, "Text Encoder Data Type",
-                             tooltip="The text encoder weight data type")
+                             tooltip="The text encoder weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "text_encoder.weight_dtype")
 
@@ -242,7 +243,7 @@ class BaseModelTabView(ABC):
         if has_text_encoder_1:
             # text encoder 1 weight dtype
             self.components.label(frame, row, 3, "Text Encoder 1 Data Type",
-                             tooltip="The text encoder 1 weight data type")
+                             tooltip="The text encoder 1 weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "text_encoder.weight_dtype")
 
@@ -251,7 +252,7 @@ class BaseModelTabView(ABC):
         if has_text_encoder_2:
             # text encoder 2 weight dtype
             self.components.label(frame, row, 3, "Text Encoder 2 Data Type",
-                             tooltip="The text encoder 2 weight data type")
+                             tooltip="The text encoder 2 weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "text_encoder_2.weight_dtype")
 
@@ -260,7 +261,7 @@ class BaseModelTabView(ABC):
         if has_text_encoder_3:
             # text encoder 3 weight dtype
             self.components.label(frame, row, 3, "Text Encoder 3 Data Type",
-                             tooltip="The text encoder 3 weight data type")
+                             tooltip="The text encoder 3 weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "text_encoder_3.weight_dtype")
 
@@ -278,7 +279,7 @@ class BaseModelTabView(ABC):
 
             # text encoder 4 weight dtype
             self.components.label(frame, row, 3, "Text Encoder 4 Data Type",
-                             tooltip="The text encoder 4 weight data type")
+                             tooltip="The text encoder 4 weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "text_encoder_4.weight_dtype")
 
@@ -295,7 +296,7 @@ class BaseModelTabView(ABC):
 
             # vae weight dtype
             self.components.label(frame, row, 3, "VAE Data Type",
-                             tooltip="The vae weight data type")
+                             tooltip="The vae weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "vae.weight_dtype")
 
@@ -314,7 +315,7 @@ class BaseModelTabView(ABC):
 
         # effnet encoder weight dtype
         self.components.label(frame, row, 3, "Effnet Encoder Data Type",
-                         tooltip="The effnet encoder weight data type")
+                         tooltip="The effnet encoder weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                               ui_state, "effnet_encoder.weight_dtype")
 
@@ -339,7 +340,7 @@ class BaseModelTabView(ABC):
 
         # decoder weight dtype
         self.components.label(frame, row, 3, "Decoder Data Type",
-                         tooltip="The decoder weight data type")
+                         tooltip="The decoder weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                               ui_state, "decoder.weight_dtype")
 
@@ -348,7 +349,7 @@ class BaseModelTabView(ABC):
         if has_text_encoder:
             # decoder text encoder weight dtype
             self.components.label(frame, row, 3, "Decoder Text Encoder Data Type",
-                             tooltip="The decoder text encoder weight data type")
+                             tooltip="The decoder text encoder weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
             self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                                   ui_state, "decoder_text_encoder.weight_dtype")
 
@@ -356,7 +357,7 @@ class BaseModelTabView(ABC):
 
         # decoder vqgan weight dtype
         self.components.label(frame, row, 3, "Decoder VQGAN Data Type",
-                         tooltip="The decoder vqgan weight data type")
+                         tooltip="The decoder vqgan weight data type. " + dropdown_hints.WEIGHT_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 4, self.__create_dtype_options(),
                               ui_state, "decoder_vqgan.weight_dtype")
 
@@ -382,7 +383,7 @@ class BaseModelTabView(ABC):
 
         # output data type
         self.components.label(frame, row, 3, "Output Data Type",
-                         tooltip="Precision to use when saving the output model")
+                         tooltip=dropdown_hints.OUTPUT_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 4, [
             ("float16", DataType.FLOAT_16),
             ("float32", DataType.FLOAT_32),
@@ -397,7 +398,7 @@ class BaseModelTabView(ABC):
         formats = controller.get_output_formats()
 
         self.components.label(frame, row, 0, "Output Format",
-                         tooltip="Format to use when saving the output model")
+                         tooltip=dropdown_hints.OUTPUT_FORMAT, wide_tooltip=True)
         self.components.options_kv(frame, row, 1, formats, ui_state, "output_model_format")
 
         # include config

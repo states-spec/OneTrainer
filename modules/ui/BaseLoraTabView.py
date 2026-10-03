@@ -1,4 +1,5 @@
 
+from modules.ui import dropdown_hints
 from modules.util import path_util
 from modules.util.enum.ModelType import PeftType
 from modules.util.enum.TrainingMethod import TrainingMethod
@@ -16,7 +17,7 @@ class BaseLoraTabView:
                                                    TrainingMethod.LORA)
 
         self.components.label(frame, 0, 0, "Type",
-                              tooltip="The type of low-parameter finetuning method.")
+                              tooltip=dropdown_hints.PEFT_TYPE, wide_tooltip=True)
         self.components.options_kv(frame, 0, 1, controller.get_peft_types(),
                                    ui_state, "peft_type", command=setup_lora_callback)
 

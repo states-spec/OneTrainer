@@ -1,3 +1,4 @@
+from modules.ui import dropdown_hints
 from modules.util.enum.NoiseScheduler import NoiseScheduler
 
 
@@ -53,7 +54,7 @@ class BaseSampleFrameView:
 
             # sampler
             if not is_flow_matching:
-                self.components.label(bottom_frame, 4, 2, "sampler:")
+                self.components.label(bottom_frame, 4, 2, "sampler:", tooltip=dropdown_hints.SAMPLER, wide_tooltip=True)
                 self.components.options_kv(bottom_frame, 4, 3, [
                     ("DDIM", NoiseScheduler.DDIM),
                     ("Euler", NoiseScheduler.EULER),

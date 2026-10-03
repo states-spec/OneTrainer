@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
+from modules.ui import dropdown_hints
 from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.LearningRateScaler import LearningRateScaler
@@ -315,7 +316,7 @@ class BaseTrainingTabView(ABC):
             delattr(self, "lr_scheduler_comp")
             delattr(self, "lr_scheduler_adv_comp")
         self.components.label(frame, 1, 0, "Learning Rate Scheduler",
-                              tooltip="Learning rate scheduler that automatically changes the learning rate during training")
+                              tooltip=dropdown_hints.LEARNING_RATE_SCHEDULER, wide_tooltip=True)
         _, d = self.components.options_adv(frame, 1, 1, [str(x) for x in list(LearningRateScheduler)], ui_state,
                                            "learning_rate_scheduler",
                                            command=self.restore_scheduler,
@@ -386,7 +387,7 @@ class BaseTrainingTabView(ABC):
 
         # ema
         self.components.label(frame, row, 0, "EMA",
-                              tooltip="EMA averages the training progress over many steps, better preserving different concepts in big datasets")
+                              tooltip=dropdown_hints.EMA_MODE, wide_tooltip=True)
         self.components.options(frame, row, 1, [str(x) for x in list(EMAMode)], ui_state, "ema")
         row += 1
 
@@ -413,7 +414,7 @@ class BaseTrainingTabView(ABC):
 
         # train dtype
         self.components.label(frame, row, 0, "Train Data Type",
-                              tooltip="The mixed precision data type used for training. This can increase training speed, but reduces precision")
+                              tooltip=dropdown_hints.TRAIN_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 1, [
             ("float32", DataType.FLOAT_32),
             ("float16", DataType.FLOAT_16),
@@ -784,7 +785,7 @@ class BaseTrainingTabView(ABC):
 
         # timestep distribution
         self.components.label(frame, row, 0, "Timestep Distribution",
-                              tooltip="Selects the function to sample timesteps during training",
+                              tooltip=dropdown_hints.TIMESTEP_DISTRIBUTION,
                               wide_tooltip=True)
         self.components.options_adv(frame, row, 1, [str(x) for x in list(TimestepDistribution)], ui_state,
                                     "timestep_distribution",
@@ -926,7 +927,7 @@ class BaseTrainingTabView(ABC):
 
         # Loss Weight function
         self.components.label(frame, 6, 0, "Loss Weight Function",
-                              tooltip="Choice of loss weight function. Can help the model learn details more accurately.")
+                              tooltip=dropdown_hints.LOSS_WEIGHT_FUNCTION, wide_tooltip=True)
         self.components.options(frame, 6, 1, [str(x) for x in controller.config.model_type.supported_loss_weights()],
                                 ui_state, "loss_weight_fn")
 

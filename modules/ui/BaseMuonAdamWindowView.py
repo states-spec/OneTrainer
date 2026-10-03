@@ -1,3 +1,4 @@
+from modules.ui.BaseOptimizerParamsWindowView import OptionDependencies
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.optimizer_util import adv_state_precisions
 
@@ -34,6 +35,7 @@ class BaseMuonAdamWindowView:
         # @formatter:on
 
         adam_params = controller.get_adam_params_def()
+        dependencies = OptionDependencies(self.components, ui_state, adam_params.keys())
 
         for index, key in enumerate(adam_params.keys()):
             if key not in KEY_DETAIL_MAP:
@@ -48,12 +50,17 @@ class BaseMuonAdamWindowView:
             row = index // 2
             col = 3 * (index % 2)
 
-            self.components.label(master, row, col, title, tooltip=tooltip)
+            label = self.components.label(master, row, col, title, tooltip=tooltip)
 
             if param_type == 'choice':
                 values = arg_info['values'](Optimizer.ADAMW_ADV) if callable(arg_info['values']) else arg_info['values']
-                self.components.options(master, row, col + 1, values, ui_state, key)
+                dependencies.add(key, self.components.options(master, row, col + 1, values, ui_state, key,
+                                                              command=dependencies.update), label)
             elif param_type != 'bool':
-                self.components.entry(master, row, col + 1, ui_state, key)
+                dependencies.add(key, self.components.entry(master, row, col + 1, ui_state, key,
+                                                            command=dependencies.update), label)
             else:
-                self.components.switch(master, row, col + 1, ui_state, key)
+                dependencies.add(key, self.components.switch(master, row, col + 1, ui_state, key,
+                                                             command=dependencies.update), label)
+
+        dependencies.update()

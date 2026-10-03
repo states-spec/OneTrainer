@@ -1,9 +1,70 @@
 
+from collections.abc import Callable
+from typing import Any
+
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.optimizer_util import (
     OPTIMIZER_DEFAULT_PARAMETERS,
     adv_state_precisions,
 )
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _on(value: Any) -> bool:
+    return value.lower() == "true" if isinstance(value, str) else bool(value)
+
+
+def _decays(value: Callable[[str], Any]) -> bool:
+    return _number(value('weight_decay')) > 0 or _number(value('centered_wd')) > 0
+
+
+# settings that only take effect together with another one: the optimizer windows grey them out while it is off.
+# Only where the setting provably has no effect then (adv_optm 2.5.13)
+OPTION_DEPENDENCIES: dict[str, Callable[[Callable[[str], Any]], bool]] = {
+    'nesterov_coef': lambda value: _on(value('nesterov')),
+    'centered_wd_mode': lambda value: _number(value('centered_wd')) > 0,
+    # adv_optm applies it only with normed momentum and momentum > 0
+    'snr_cond': lambda value: _on(value('normed_momentum')) and _number(value('momentum')) > 0,
+    'min_beta1': lambda value: _number(value('beta1_warmup')) > 0,
+    # they modify the (centered) weight decay
+    'cautious_wd': _decays,
+    'fisher_wd': _decays,
+    'geometric_wd': _decays,
+}
+
+
+class OptionDependencies:
+    def __init__(self, components, ui_state, shown_keys):
+        self.components = components
+        self.ui_state = ui_state
+        self.shown_keys = set(shown_keys)
+        self.widgets = []
+
+    def add(self, key: str, widget, label=None, rule: Callable[[Callable[[str], Any]], bool] | None = None):
+        # the label too: a disabled checkbox looks almost like an unchecked one in the dark theme (Qt greys the text;
+        # a CTk label has no disabled color)
+        rule = rule or OPTION_DEPENDENCIES.get(key)
+        if rule is not None:
+            self.widgets += [(w, rule) for w in (widget, label) if w is not None]
+
+    def value(self, key: str) -> Any:
+        # a setting the window doesn't show has no effect for this optimizer, even if the config holds a value
+        if key not in self.shown_keys:
+            return None
+        try:
+            return self.ui_state.get_var(key).get()
+        except KeyError:
+            return None
+
+    def update(self, *args):
+        for widget, rule in self.widgets:
+            self.components.set_widget_enabled(widget, rule(self.value))
 
 
 class BaseOptimizerParamsWindowView:
@@ -146,6 +207,12 @@ class BaseOptimizerParamsWindowView:
         # @formatter:on
 
         selected_optimizer = controller.config.optimizer.optimizer
+        dependencies = OptionDependencies(self.components, optimizer_ui_state,
+                                          OPTIMIZER_DEFAULT_PARAMETERS[selected_optimizer].keys())
+
+        def on_change(*args):
+            update_user_pref_cb(*args)
+            dependencies.update()
 
         # Extract the keys for the selected optimizer
         for index, key in enumerate(OPTIMIZER_DEFAULT_PARAMETERS[selected_optimizer].keys()):
@@ -160,24 +227,27 @@ class BaseOptimizerParamsWindowView:
             row = (index // 2) + 1
             col = 3 * (index % 2)
 
-            self.components.label(master, row, col, title, tooltip=tooltip)
+            label = self.components.label(master, row, col, title, tooltip=tooltip)
 
             if key == 'MuonWithAuxAdam':
                 frame = self.components.inline_frame(master, row, col + 1, columnspan=2)
 
-                self.components.switch(frame, 0, 0, optimizer_ui_state, key, command=update_user_pref_cb)
+                self.components.switch(frame, 0, 0, optimizer_ui_state, key, command=on_change)
 
                 self.muon_adam_button = self.components.button(
                     frame, 0, 1, "...", open_muon_adam_cb,
                     tooltip="Configure the auxiliary AdamW_adv optimizer",
                     width=20, padx=5)
+                dependencies.add(key, self.muon_adam_button, rule=lambda value: _on(value('MuonWithAuxAdam')))
             elif type == 'choice':
                 values = arg_info['values'](selected_optimizer) if callable(arg_info['values']) else arg_info['values']
-                self.components.options(master, row, col + 1, values, optimizer_ui_state, key,
-                                        command=update_user_pref_cb)
+                dependencies.add(key, self.components.options(master, row, col + 1, values, optimizer_ui_state, key,
+                                                              command=on_change), label)
             elif type != 'bool':
-                self.components.entry(master, row, col + 1, optimizer_ui_state, key,
-                                      command=update_user_pref_cb)
+                dependencies.add(key, self.components.entry(master, row, col + 1, optimizer_ui_state, key,
+                                                            command=on_change), label)
             else:
-                self.components.switch(master, row, col + 1, optimizer_ui_state, key,
-                                       command=update_user_pref_cb)
+                dependencies.add(key, self.components.switch(master, row, col + 1, optimizer_ui_state, key,
+                                                             command=on_change), label)
+
+        dependencies.update()

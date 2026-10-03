@@ -37,7 +37,9 @@ class BaseUIState(ABC):
         pass
 
     def update(self, obj):
-        self.obj = obj
+        # copies obj's values into the vars, whose traces write them into the object the state was built for; that one
+        # stays self.obj. Rebinding it to obj (e.g. the copy a preset load passes) left self.obj stale after the next
+        # change
         self.__set_vars(obj)
 
     def get_var(self, name):

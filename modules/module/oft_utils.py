@@ -48,6 +48,7 @@ class OFTRotationModule(nn.Module):
         use_cayley_neumann=True,
         num_cayley_neumann_terms=5,
         dropout_probability=0.0,
+        oft_cans=False,
     ):
         super().__init__()
         self.r = r
@@ -64,6 +65,7 @@ class OFTRotationModule(nn.Module):
         self.oft_scaled = oft_scaled
         self.use_cayley_neumann = use_cayley_neumann
         self.num_cayley_neumann_terms = num_cayley_neumann_terms
+        self.oft_cans = oft_cans
         # Create indices for upper triangle (excluding diagonal)
         rows, cols = torch.triu_indices(block_size, block_size, 1)
         self.register_buffer("rows", rows, persistent=False)
@@ -88,8 +90,47 @@ class OFTRotationModule(nn.Module):
         vec = matrix[:, self.rows, self.cols]
         return vec
 
+    @staticmethod
+    def _cans_newton_schulz_iteration(G: torch.Tensor, steps: int, eps: float = 1e-7) -> torch.Tensor:
+        """
+        Chebyshev-accelerated Newton-Schulz iteration (CANS) towards the orthogonal polar factor of G, with a
+        dynamically computed Chebyshev lower bound. Assumes the smallest singular value of G is at least 1, which
+        holds for G = (I + Q)^2 with a skew-symmetric Q.
+        """
+        # the max row sum is >= the largest singular value
+        g_norm = G.abs().sum(dim=-1, keepdim=True).amax(dim=-2, keepdim=True).clamp_min(eps).detach()
+        X = G / g_norm
+
+        # the smallest singular value of G is >= 1, so the one of X is >= 1 / g_norm
+        lower_bound = 1.0 / g_norm
+        upper_bound = 1.0
+
+        for _ in range(steps):
+            lb, ub = lower_bound, upper_bound
+            lb_ub = lb * ub
+            e_sq = (lb ** 2 + lb_ub + ub ** 2) / 3.0
+            K = 2.0 * e_sq ** 1.5
+            L = lb_ub * (lb + ub)
+            denom = K + L
+            alpha = 6.0 / denom
+            c1 = alpha * e_sq
+            c3 = -alpha / 3.0
+
+            A = torch.bmm(X, X.mT)
+            X = c1 * X + c3 * torch.bmm(A, X)
+
+            eps_val = (K - L) / denom
+            # a (B, 1, 1) bmm with ones is an identity; it keeps torch.compile from inlining the bound recursion
+            eps_val = torch.bmm(eps_val, torch.ones_like(eps_val))
+
+            lower_bound = 1 - eps_val
+            upper_bound = 1 + eps_val
+
+        return X
+
     def _cayley_batch(
-        self, Q: torch.Tensor, block_size: int, use_cayley_neumann: bool = True, num_neumann_terms: int = 5
+        self, Q: torch.Tensor, block_size: int, use_cayley_neumann: bool = True, num_neumann_terms: int = 5,
+        oft_cans: bool = False,
     ) -> torch.Tensor:
         """
         Perform the Cayley parametrization on a batch of skew-symmetric matrices.
@@ -99,7 +140,19 @@ class OFTRotationModule(nn.Module):
 
         Q_skew = self._pytorch_skew_symmetric(Q, block_size)
 
-        if use_cayley_neumann:
+        if oft_cans:
+            # exact Cayley transform (I + Q)(I - Q)^-1 as the polar factor of (I + Q)^2: |I + Q|^2 = I - Q^2
+            eye_matrix = torch.eye(block_size, device=Q_skew.device, dtype=Q_skew.dtype).expand(b, -1, -1)
+            G = eye_matrix + 2 * Q_skew + torch.bmm(Q_skew, Q_skew)
+            # bf16 reaches its precision floor (orthogonality error ~1e-2) in 5 steps, fp32 ~1e-6 in 7
+            R = self._cans_newton_schulz_iteration(G, steps=5 if G.dtype == torch.bfloat16 else 7)
+        elif use_cayley_neumann and num_neumann_terms == 5:
+            # I + 2Q + 2Q^2 + 2Q^3 + Q^4 in Horner form: two matmuls instead of three
+            eye_matrix = torch.eye(block_size, device=Q.device, dtype=Q.dtype).expand(b, -1, -1)
+            Q_squared = torch.bmm(Q_skew, Q_skew)
+            inner = eye_matrix * 2.0 + Q_skew * 2.0 + Q_squared
+            R = eye_matrix + Q_skew * 2.0 + torch.bmm(Q_squared, inner)
+        elif use_cayley_neumann:
             R = torch.eye(block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
             if num_neumann_terms > 1:
                 R.add_(Q_skew, alpha=2.0)
@@ -134,7 +187,7 @@ class OFTRotationModule(nn.Module):
         effective_weight = self.weight / scaling_factor
 
         orth_rotate = self._cayley_batch(
-            effective_weight, self.block_size, self.use_cayley_neumann, self.num_cayley_neumann_terms
+            effective_weight, self.block_size, self.use_cayley_neumann, self.num_cayley_neumann_terms, self.oft_cans
         )
         orth_rotate = self.dropout(orth_rotate)
 

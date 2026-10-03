@@ -619,6 +619,7 @@ class OFTModule(PeftBase):
     oft_block_size: int
     block_share: bool
     oft_scaled: bool
+    oft_cans: bool
     dropout_probability: float
     adjustment_info: tuple[int, int] | None # for reporting
 
@@ -628,6 +629,7 @@ class OFTModule(PeftBase):
         self.rank = 0
         self.block_share = block_share
         self.oft_scaled = oft_scaled
+        self.oft_cans = kwargs.pop('oft_cans', False)
         self.dropout_probability = kwargs.pop('dropout_probability', 0.0)
         self.oft_R = None
         self.adjustment_info = None
@@ -697,6 +699,7 @@ class OFTModule(PeftBase):
             use_cayley_neumann=True,
             num_cayley_neumann_terms=5,
             dropout_probability=self.dropout_probability,
+            oft_cans=self.oft_cans,
         )
 
         nn.init.zeros_(self.oft_R.weight)
@@ -714,7 +717,8 @@ class OFTModule(PeftBase):
 
         # For Conv2d, we must rotate the weights, not the input, to preserve spatial information.
         orth_rotate = self.oft_R._cayley_batch(
-            effective_weight, self.oft_R.block_size, self.oft_R.use_cayley_neumann, self.oft_R.num_cayley_neumann_terms
+            effective_weight, self.oft_R.block_size, self.oft_R.use_cayley_neumann, self.oft_R.num_cayley_neumann_terms,
+            self.oft_R.oft_cans,
         )
         orth_rotate = self.oft_R.dropout(orth_rotate)
 
@@ -925,6 +929,7 @@ class LoRAModuleWrapper:
             ]
             self.additional_kwargs = {
                 'dropout_probability': config.dropout_probability,
+                'oft_cans': config.oft_cans,
             }
         elif self.peft_type == PeftType.LOKR:
             self.klass = LoKrModule

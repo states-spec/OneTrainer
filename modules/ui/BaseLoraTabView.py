@@ -96,6 +96,11 @@ class BaseLoraTabView:
                                   tooltip="Applies a scaling factor to the learned weights. This ensures that the effective learning rate remains consistent across different block sizes. Without this, different block sizes require significantly different learning rates.")
             self.components.switch(master, 2, 4, ui_state, "oft_scaled")
 
+            # Exact Cayley transform (CANS)
+            self.components.label(master, 3, 3, "Exact Rotation (CANS)",
+                                  tooltip="Computes the exact Cayley rotation with a Chebyshev-accelerated Newton-Schulz iteration (CANS) instead of the default 5-term series, which drifts from an orthogonal matrix at larger rotations. Inference tools that use the exact Cayley transform then apply the same rotation that was trained. Slower: about 15 matrix products per layer instead of 2. The saved file format is unchanged.")
+            self.components.switch(master, 3, 4, ui_state, "oft_cans")
+
             # Dropout Percentage
             self.components.label(master, 2, 0, "Dropout Probability",
                                   tooltip="Dropout probability. This percentage of the rotated adapter nodes that will be randomly restored to the base model initial statue. Helps with overfitting. 0 disables, 1 maximum.")

@@ -5,7 +5,6 @@ import traceback
 from modules.model.StableDiffusionXLModel import StableDiffusionXLModel
 from modules.modelLoader.mixin.HFModelLoaderMixin import HFModelLoaderMixin
 from modules.modelLoader.mixin.SDConfigModelLoaderMixin import SDConfigModelLoaderMixin
-from modules.util import create
 from modules.util.config.TrainConfig import QuantizationConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.NoiseScheduler import NoiseScheduler
@@ -78,6 +77,9 @@ class StableDiffusionXLModelLoader(
             base_model_name,
             subfolder="scheduler",
         )
+        # imported here: create imports every model loader, this one too, so a module-level import made
+        # this module fail to import on its own (circular import)
+        from modules.util import create
         noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=noise_scheduler,
@@ -150,6 +152,7 @@ class StableDiffusionXLModelLoader(
             safety_checker=None,
         )
 
+        from modules.util import create
         noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=pipeline.scheduler,
@@ -203,6 +206,7 @@ class StableDiffusionXLModelLoader(
                 use_safetensors=True,
             )
 
+        from modules.util import create
         noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=pipeline.scheduler,

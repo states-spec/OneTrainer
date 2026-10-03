@@ -98,7 +98,7 @@ class BaseLoraTabView:
 
             # Exact Cayley transform (CANS)
             self.components.label(master, 3, 3, "Exact Rotation (CANS)",
-                                  tooltip="Computes the exact Cayley rotation with a Chebyshev-accelerated Newton-Schulz iteration (CANS) instead of the default 5-term series, which drifts from an orthogonal matrix at larger rotations. Inference tools that use the exact Cayley transform then apply the same rotation that was trained. Slower: about 15 matrix products per layer instead of 2. The saved file format is unchanged.")
+                                  tooltip="Computes the exact Cayley rotation with a Chebyshev-accelerated Newton-Schulz iteration (CANS) instead of the default 5-term series, which drifts from an orthogonal matrix at larger rotations. Off by default: PEFT, the reference implementation of this format, applies the 5-term series, so use this only if your inference applies the exact transform. Same file format; the extra cost is small next to the layer itself.")
             self.components.switch(master, 3, 4, ui_state, "oft_cans")
 
             # Dropout Percentage

@@ -102,6 +102,10 @@ def init_model_parameters(
 
     from modules.util import create
 
+    if model.train_config.optimizer.optimizer.is_adv_optm:
+        from modules.util.optimizer.tag_util import tag_peft_parameters
+        tag_peft_parameters(model, model.train_config.oft_scaled)
+
     model.optimizer = create.create_optimizer(
         parameters, model.optimizer_state_dict, model.train_config, layer_key_fn
     )

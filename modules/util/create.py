@@ -237,6 +237,29 @@ def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
         optimizer.kourkoutas_helper = KourkoutasHelper(optimizer)
 
 
+def _drop_mismatched_kourkoutas_state(optimizer: torch.optim.Optimizer):
+    # Kourkoutas-beta keeps one running gradient norm per layer, per row for tagged LoRA/OFT parameters (see
+    # tag_util). A backup made before the parameters were tagged has one value per layer, which fails in the first
+    # step ("output with shape [] doesn't match the broadcast shape [8, 1]"). Those averages are dropped and rebuilt.
+    dropped = 0
+    for p, state in optimizer.state.items():
+        r_ema = state.get('kourkoutas_r_ema')
+        if r_ema is None:
+            continue
+        if getattr(p, '_is_oft', False) or getattr(p, '_is_lora_A', False):
+            shape = (p.shape[0], 1)
+        elif getattr(p, '_is_lora_B', False):
+            shape = (1, p.shape[1])
+        else:
+            shape = ()
+        if tuple(r_ema.shape) != shape:
+            del state['kourkoutas_r_ema']
+            dropped += 1
+    if dropped:
+        print(f"Warning: the backup's Kourkoutas-beta averages of {dropped} parameters were made before the adapter "
+              f"parameters were tagged for adv_optm. They are reset and rebuilt over the next steps.")
+
+
 # param group keys that hold a setting from the config (TrainOptimizerConfig fields, plus the ones the optimizers
 # name differently); the other keys are the optimizer's own running values, like Prodigy's d
 _OPTIMIZER_SETTING_ALIASES = {"betas", "compiled_optimizer"}
@@ -1254,6 +1277,7 @@ def create_optimizer(
         if optimizer_config.optimizer.is_adv_optm:
             _restore_adv_optm_state_dtypes(optimizer, state_dict)
             _restore_kourkoutas_helper(optimizer)
+            _drop_mismatched_kourkoutas_state(optimizer)
             if optimizer_config.optimizer == Optimizer.PRODIGY_ADV:
                 _disable_prodigy_adv_nesterov(optimizer)
 

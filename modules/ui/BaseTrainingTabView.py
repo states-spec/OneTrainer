@@ -854,7 +854,7 @@ class BaseTrainingTabView(ABC):
 
         # Masked Training
         self.components.label(frame, 0, 0, "Masked Training",
-                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample.")
+                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample: <image name>-masklabel.png in the same folder (always PNG). An image without one is trained on the whole image. Inpainting models take the mask as an input instead; their loss covers the whole image.")
         self.components.switch(frame, 0, 1, ui_state, "masked_training")
 
         if config.model_type.has_mask_input():
@@ -866,13 +866,13 @@ class BaseTrainingTabView(ABC):
 
         # unmasked weight
         needs_masked_training.append(self.components.label(frame, 2, 0, "Unmasked Weight",
-                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region"))
+                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region. Inpainting models: only used by Normalize Masked Area Loss."))
         needs_masked_training.append(self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
                               extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1")))
 
         # normalize masked area loss
         needs_masked_training.append(self.components.label(frame, 3, 0, "Normalize Masked Area Loss",
-                              tooltip="When masked training is enabled, normalizes the loss for each sample based on the sizes of the masked region"))
+                              tooltip="When masked training is enabled, divides the loss of each sample by its mask's average weight, so samples with small masks are not learned more weakly"))
         needs_masked_training.append(self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss"))
 
         if not conditioning_input and config.training_method == TrainingMethod.LORA:

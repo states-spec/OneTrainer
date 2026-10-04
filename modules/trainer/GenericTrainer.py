@@ -655,19 +655,21 @@ class GenericTrainer(BaseTrainer):
                             self.model.optimizer.step_parameter(tensor, param_group, i)
                             tensor.grad = None
 
-                    def __grad_hook(tensor: Tensor, param_group=param_group, i=i):
+                    # the step function is bound as a default: a closure would see only the one defined for the last
+                    # parameter, so every parameter was stepped with the last param group's lr, betas and decay
+                    def __grad_hook(tensor: Tensor, optimizer_step=__optimizer_step):
                         init_compile()  # workaround for https://github.com/pytorch/pytorch/issues/186537
                         if self.__is_update_step(self.model.train_progress):
                             if fused_reduce:
                                 multi.reduce_grads_mean(
                                     [tensor],
                                     self.config.gradient_reduce_precision,
-                                    after_reduce=__optimizer_step if fused_optimizer_step else None,
+                                    after_reduce=optimizer_step if fused_optimizer_step else None,
                                     async_op=self.config.async_gradient_reduce,
                                     max_buffer=self.config.async_gradient_reduce_buffer * 1024 * 1024,
                                 )
                             elif fused_optimizer_step:
-                                __optimizer_step(tensor)
+                                optimizer_step(tensor)
 
                     handle = parameter.register_post_accumulate_grad_hook(__grad_hook)
                     self.grad_hook_handles.append(handle)

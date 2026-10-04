@@ -96,18 +96,44 @@ class LoRASaverMixin(
         save_state_dict = self._convert_legacy(model, save_state_dict)
         self._write_lora_file(model, destination, save_state_dict)
 
+    def check_can_save(self, model: BaseModel, output_model_format: ModelFormat):
+        # the format refusals of the save, run by the trainer before the training: at the final save they came
+        # after the whole run, and intermediate saves reported them as a full disk
+        self._check_components(model, output_model_format, self._get_state_dict(model).keys())
+
+    def _check_components(self, model: BaseModel, output_model_format: ModelFormat, keys):
+        # components are the distinct top-level key segments (transformer / text_encoder[_n] / bundle_emb)
+        components = {key.split(".", 1)[0] for key in keys}
+        if output_model_format == ModelFormat.ORIGINAL_LORA:
+            # ORIGINAL puts the denoising model at the top level with no prefix, which leaves no namespace for a
+            # second component: a trained text encoder (or bundled embeddings) would have to sit under its own
+            # prefix alongside the unprefixed denoising keys, an asymmetric layout no external tool reads.
+            if len(components) > 1:
+                raise RuntimeError(
+                    "The ORIGINAL LoRA format places the denoising model at the top level with no prefix and "
+                    f"cannot represent more than one trained component (got {len(components)}: "
+                    f"{', '.join(sorted(components))}).")
+        elif output_model_format == ModelFormat.COMFY_LORA:
+            # COMFY needs a Comfy-native "text_encoders.<prefix>" name for every trained text encoder, or Comfy
+            # silently drops those keys on load: every TE component present (top-level segment that is neither
+            # the denoising model nor bundle_emb) must have a prefix. Models Comfy can't load (Sana, Wuerstchen)
+            # and any future model whose lora_text_encoders declares a TE with no COMFY_LORA name raise here.
+            missing = (components - {model.model_type.denoising_model_part(), "bundle_emb"}) \
+                - self._comfy_text_encoder_prefixes(model).keys()
+            if missing:
+                raise RuntimeError(
+                    f"The COMFY LoRA format has no Comfy-native text-encoder mapping for {', '.join(sorted(missing))} "
+                    "on this model, so ComfyUI would silently drop those keys on load.")
+
+    @staticmethod
+    def _comfy_text_encoder_prefixes(model: BaseModel) -> dict[str, str]:
+        # the canonical -> COMFY_LORA text encoder names, pulled from the model's lora_text_encoders declaration
+        return {te_names[ModelFormat.DIFFUSERS_LORA]: te_names[ModelFormat.COMFY_LORA]
+                for _te_module, te_names in model.lora_text_encoders() if ModelFormat.COMFY_LORA in te_names}
+
     def _save_original(self, model: BaseModel, destination: str, dtype: torch.dtype | None):
         state_dict = self._get_state_dict(model)
-        # ORIGINAL puts the denoising model at the top level with no prefix, which leaves no namespace for a
-        # second component: a trained text encoder (or bundled embeddings) would have to sit under its own
-        # prefix alongside the unprefixed denoising keys, an asymmetric layout no external tool reads. Refuse
-        # it. Components are the distinct top-level key segments (transformer / text_encoder[_n] / bundle_emb).
-        components = {key.split(".", 1)[0] for key in state_dict}
-        if len(components) > 1:
-            raise RuntimeError(
-                "The ORIGINAL LoRA format places the denoising model at the top level with no prefix and "
-                f"cannot represent more than one trained component (got {len(components)}: "
-                f"{', '.join(sorted(components))}).")
+        self._check_components(model, ModelFormat.ORIGINAL_LORA, state_dict.keys())
 
         conversion = lora_original_conversion(model, model.lora_diffusers_to_original())
         save_state_dict = self._convert_state_dict_dtype(state_dict, dtype)
@@ -124,19 +150,9 @@ class LoRASaverMixin(
         state_dict = self._get_state_dict(model)
         save_state_dict = self._convert_state_dict_dtype(state_dict, dtype)
         save_state_dict = convert(save_state_dict, conversion, strict=True)
-        # COMFY needs a Comfy-native "text_encoders.<prefix>" name for every trained text encoder, or Comfy
-        # silently drops those keys on load. Refuse to write a half-readable file: every TE component present
-        # (top-level segment that is neither the denoising model nor bundle_emb) must have a prefix. Models
-        # Comfy can't load (Sana, Wuerstchen) and any future model whose lora_text_encoders declares a TE with
-        # no COMFY_LORA name raise here instead. The canonical -> COMFY_LORA map is pulled from the declaration.
-        te_prefixes = {te_names[ModelFormat.DIFFUSERS_LORA]: te_names[ModelFormat.COMFY_LORA]
-                       for _te_module, te_names in model.lora_text_encoders() if ModelFormat.COMFY_LORA in te_names}
-        te_components = {key.split(".", 1)[0] for key in save_state_dict} - {model.model_type.denoising_model_part(), "bundle_emb"}
-        missing = te_components - te_prefixes.keys()
-        if missing:
-            raise RuntimeError(
-                f"The COMFY LoRA format has no Comfy-native text-encoder mapping for {', '.join(sorted(missing))} "
-                "on this model, so ComfyUI would silently drop those keys on load.")
+        # refuse to write a half-readable file (a trained text encoder without a Comfy-native name)
+        self._check_components(model, ModelFormat.COMFY_LORA, save_state_dict.keys())
+        te_prefixes = self._comfy_text_encoder_prefixes(model)
         # swap the denoising component's top prefix for Comfy's "diffusion_model." (denoising model only
         # -- TEs keep their canonical names; strict=False so the TE and bundle_emb. keys pass through untouched).
         save_state_dict = convert(save_state_dict, [(model.model_type.denoising_model_part(), "diffusion_model")], strict=False)

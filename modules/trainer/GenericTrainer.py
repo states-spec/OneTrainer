@@ -186,6 +186,9 @@ class GenericTrainer(BaseTrainer):
             self.model, self.model_setup, self.model.train_progress
         )
         self.model_saver = self.create_model_saver()
+        # the saver's format checks need the trained parts set up, so they run here, before the cache is built and
+        # the training starts: at the final save, a refusal came after the whole run and left no output
+        self.model_saver.check_can_save(self.model, self.config.output_model_format)
 
         self.model_sampler = self.create_model_sampler(self.model)
         self.previous_sample_time = -1

@@ -92,8 +92,9 @@ class AnimaBaseDataLoader(
         if config.masked_training or config.model_type.has_mask_input():
             output_names.append('latent_mask')
 
-        if not config.train_text_encoder_or_embedding():
-            output_names.append('text_encoder_hidden_state')
+        # Anima never trains its text encoder (the UI hides the switch), so the encoded text is always used, as for
+        # Z-Image: with a leftover text_encoder.train, predict re-encoded tokens without the T5 ids and failed
+        output_names.append('text_encoder_hidden_state')
 
         return self._output_modules_from_out_names(
             model, model_setup,

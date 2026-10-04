@@ -9,6 +9,7 @@ from modules.module.FusedModule import FusedModuleGroup, check_fusion_match, dis
 from modules.module.oft_utils import OFTRotationModule
 from modules.module.quantized.LinearSVD import BaseLinearSVD
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.convert_util import DOUBLE_SEGMENT_SUFFIXES
 from modules.util.enum.ModelType import PeftType
 from modules.util.lokr_utils import factorization, make_kron, rebuild_tucker
 from modules.util.ModuleFilter import ModuleFilter
@@ -1046,13 +1047,22 @@ class LoRAModuleWrapper:
         # Temporarily re-create the state dict, so we can see what keys were left.
         remaining_names = set(state_dict) - set(self.state_dict())
 
-        # create dummy modules for the remaining keys
+        # keep the layers this wrapper doesn't train (a narrower layer filter, or layers the model lacks) in dummy
+        # modules, so they are saved again unchanged. Each dummy gets only its own layer's keys: it returns what it
+        # was given as its state dict, and with the whole dict it overwrote the trained layers at every save. A
+        # layer's keys are "<layer>.<param>" or "<layer>.<param>.weight"; an OFT layer has no .alpha to find it by.
+        remaining_layers = defaultdict(dict)
         for name in remaining_names:
-            if name.endswith(".alpha"):
-                prefix = name.removesuffix(".alpha")
-                module = self.dummy_klass(prefix, None, *self.additional_args, **self.additional_kwargs)
-                module.load_state_dict(state_dict)
-                self.lora_modules[prefix] = module
+            segments = name.split(".")
+            cut = 2 if name.endswith(DOUBLE_SEGMENT_SUFFIXES) and len(segments) > 2 else 1
+            remaining_layers[".".join(segments[:-cut])][name] = state_dict[name]
+
+        for prefix, layer_state_dict in remaining_layers.items():
+            if prefix in self.lora_modules:
+                continue  # a trained layer's unused key (such as a DoRA scale in a plain LoRA run) is no layer
+            module = self.dummy_klass(prefix, None, *self.additional_args, **self.additional_kwargs)
+            module.load_state_dict(layer_state_dict)
+            self.lora_modules[prefix] = module
 
     def state_dict(self) -> dict:
         """
@@ -1080,14 +1090,16 @@ class LoRAModuleWrapper:
         Hooks the LoRA into the module without changing its weights
         """
         for module in self.lora_modules.values():
-            module.hook_to_module()
+            if not isinstance(module, self.dummy_klass):  # a dummy only holds the weights of a layer it isn't on
+                module.hook_to_module()
 
     def remove_hook_from_module(self):
         """
         Removes the LoRA hook from the module without changing its weights
         """
         for module in self.lora_modules.values():
-            module.remove_hook_from_module()
+            if not isinstance(module, self.dummy_klass):
+                module.remove_hook_from_module()
 
     def prune(self):
         """
@@ -1102,4 +1114,5 @@ class LoRAModuleWrapper:
         if dropout_probability < 0 or dropout_probability > 1:
             raise ValueError("Dropout probability must be in [0, 1]")
         for module in self.lora_modules.values():
-            module.dropout.p = dropout_probability
+            if not isinstance(module, self.dummy_klass):  # an OFT dummy has no rotation, so no dropout
+                module.dropout.p = dropout_probability

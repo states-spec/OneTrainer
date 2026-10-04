@@ -54,7 +54,8 @@ class HiDreamFineTuneSetup(
                     "embeddings_4"
                 )
 
-        self._create_model_part_parameters(parameter_group_collection, "transformer", model.transformer, config.transformer)
+        self._create_model_part_parameters(parameter_group_collection, "transformer", model.transformer, config.transformer,
+                                           freeze=ModuleFilter.create(config), debug=config.debug_mode)
 
         return parameter_group_collection
 
@@ -69,8 +70,7 @@ class HiDreamFineTuneSetup(
         self._setup_model_part_requires_grad("text_encoder_2", model.text_encoder_2, config.text_encoder_2, model.train_progress)
         self._setup_model_part_requires_grad("text_encoder_3", model.text_encoder_3, config.text_encoder_3, model.train_progress)
         self._setup_model_part_requires_grad("text_encoder_4", model.text_encoder_4, config.text_encoder_4, model.train_progress)
-        self._setup_model_part_requires_grad("transformer", model.transformer, config.transformer, model.train_progress,
-                                            freeze=ModuleFilter.create(config), debug=config.debug_mode)
+        self._setup_model_part_requires_grad("transformer", model.transformer, config.transformer, model.train_progress)
 
         model.vae.requires_grad_(False)
 

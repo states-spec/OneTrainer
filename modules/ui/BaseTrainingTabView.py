@@ -370,7 +370,7 @@ class BaseTrainingTabView(ABC):
 
         # clip grad norm
         self.components.label(frame, 10, 0, "Clip Grad Norm",
-                              tooltip="Clips the gradient norm. Leave empty to disable gradient clipping.")
+                              tooltip="Clips the gradient norm. Leave empty to disable gradient clipping. With Fused Back Pass, each parameter's gradient is clipped to this norm on its own instead of all gradients together.")
         self.components.entry(frame, 10, 1, ui_state, "clip_grad_norm")
 
     def __create_base2_frame(self, master, row, controller, ui_state, video_training_enabled: bool = False,

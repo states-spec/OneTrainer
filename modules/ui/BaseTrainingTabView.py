@@ -846,27 +846,27 @@ class BaseTrainingTabView(ABC):
     def __create_masked_frame(self, master, row, ui_state):
         frame = self.components.section_frame(master, row)
         config = ui_state.obj
-        # inpainting models (mask and conditioning image inputs) train on the unmasked loss and drop the mask at random
-        # (Unmasked Probability); the other models weight the loss with the mask. Settings for the other kind are not
-        # shown. The tab is rebuilt when the model type or the training method changes.
+        # every model weights the loss with the mask; inpainting models (mask and conditioning image inputs) also take
+        # it as an input and drop it at random (Unmasked Probability). Settings a model can't use are not shown. The
+        # tab is rebuilt when the model type or the training method changes.
         conditioning_input = config.model_type.has_conditioning_image_input()
         needs_masked_training = []
 
         # Masked Training
         self.components.label(frame, 0, 0, "Masked Training",
-                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample: <image name>-masklabel.png in the same folder (always PNG). An image without one is trained on the whole image. Inpainting models take the mask as an input instead; their loss covers the whole image.")
+                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample: <image name>-masklabel.png in the same folder (always PNG). An image without one is trained on the whole image. Inpainting models also take the mask as an input.")
         self.components.switch(frame, 0, 1, ui_state, "masked_training")
 
         if config.model_type.has_mask_input():
             # unmasked probability
             needs_masked_training.append(self.components.label(frame, 1, 0, "Unmasked Probability",
-                                  tooltip="When masked training is enabled, specifies the number of training steps done on unmasked samples. Only for inpainting models, which take the mask as an input."))
+                                  tooltip="When masked training is enabled, specifies the share of samples trained without a mask: an all-white mask input and a loss over the whole image. Only for inpainting models, which take the mask as an input."))
             needs_masked_training.append(self.components.entry(frame, 1, 1, ui_state, "unmasked_probability",
                                   extra_validate=check_range(lower=0, upper=1, message="Unmasked probability must be between 0 and 1")))
 
         # unmasked weight
         needs_masked_training.append(self.components.label(frame, 2, 0, "Unmasked Weight",
-                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region. Inpainting models: only used by Normalize Masked Area Loss."))
+                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region (1: the whole image counts fully)."))
         needs_masked_training.append(self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
                               extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1")))
 
@@ -875,7 +875,7 @@ class BaseTrainingTabView(ABC):
                               tooltip="When masked training is enabled, divides the loss of each sample by its mask's average weight, so samples with small masks are not learned more weakly"))
         needs_masked_training.append(self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss"))
 
-        if not conditioning_input and config.training_method == TrainingMethod.LORA:
+        if config.training_method == TrainingMethod.LORA:
             # masked prior preservation
             needs_masked_training.append(self.components.label(frame, 4, 0, "Masked Prior Preservation Weight",
                                   tooltip="Preserves regions outside the mask using the original untrained model output as a target. Only available for LoRA training. If enabled, use a low unmasked weight."))

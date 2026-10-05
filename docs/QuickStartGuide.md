@@ -122,22 +122,24 @@ extension.
 - An image without a mask is trained on the whole image, the same as an all-white mask.
 - Gray mask values work as partial weights.
 
-How the mask is used depends on the model, and the training tab only shows the settings the selected model uses:
+On every model the mask weights the loss:
 
-- **Text-to-image models** (Stable Diffusion, SDXL, Flux, Chroma, ...): the mask weights the loss.
-  - *Unmasked Weight* is the loss weight of the black areas, on every step (0: ignored, 1: same as no mask).
-  - *Normalize Masked Area Loss* divides each sample's loss by its mask's average weight, so samples with small masks
-    are not learned more weakly.
-  - *Masked Prior Preservation Weight* (LoRA only) trains the black areas towards the prediction of the original
-    model; set a low Unmasked Weight with it.
-  - Unmasked Probability and Custom Conditioning Image have no effect on these models.
-- **Inpainting models** (Stable Diffusion 1.5/2.0 inpainting, SDXL inpainting, Flux Fill): the mask and the image with
-  the masked (white) area filled with gray are inputs of the model, and the loss covers the whole image.
-  - *Unmasked Probability* is the share of samples that get an all-white mask and an all-gray image instead, so the model
-    also learns to generate whole images.
-  - *Custom Conditioning Image* replaces that grayed-out image with your own `photo-condlabel.png`, for example the
-    "before" image of a before/after pair to teach object removal.
-  - Unmasked Weight only rescales each sample's loss there, through Normalize Masked Area Loss.
+- *Unmasked Weight* is the loss weight of the black areas, on every step (0: ignored, 1: same as no mask).
+- *Normalize Masked Area Loss* divides each sample's loss by its mask's average weight, so samples with small masks are
+  not learned more weakly.
+- *Masked Prior Preservation Weight* (LoRA only) trains the black areas towards the prediction of the original model;
+  set a low Unmasked Weight with it.
+
+**Inpainting models** (Stable Diffusion 1.5/2.0 inpainting, SDXL inpainting, Flux Fill) also take the mask and the image
+with the masked (white) area filled with gray as inputs, and the training tab shows two more settings for them:
+
+- *Unmasked Probability* is the share of samples that get an all-white mask and an all-gray image instead, so the model
+  also learns to generate whole images (the loss then covers the whole image).
+- *Custom Conditioning Image* replaces that grayed-out image with your own `photo-condlabel.png`, for example the
+  "before" image of a before/after pair to teach object removal.
+
+Upstream OneTrainer and older versions of this fork leave the mask out of the loss of inpainting models (the loss covers
+the whole image). To train one that way, set Unmasked Weight to 1.
 
 ### Sampling
 

@@ -637,6 +637,11 @@ class GenericTrainer(BaseTrainer):
         if fused_optimizer_step:
             if self.config.gradient_accumulation_steps > 1:
                 print("Warning: activating Fused Back Pass with Accumulation Steps > 1 does not reduce VRAM usage.")
+            if self.config.clip_grad_norm is not None:
+                # each tensor is stepped in its own grad hook, before the other gradients exist
+                print(f"Note: with Fused Back Pass, Clip Grad Norm clips each parameter's gradient to a norm of "
+                      f"{self.config.clip_grad_norm} on its own, not the norm of all gradients together, which is only "
+                      f"known after the back pass. This clips less than the same value without Fused Back Pass.")
             if self.config.multi_gpu and not fused_reduce:
                 raise ValueError("if Fused Back Pass and Multi-GPU is enabled, Fused Reduce must also be enabled")
         elif not fused_reduce:

@@ -562,13 +562,15 @@ class GenericTrainer(BaseTrainer):
             tqdm.write("Saving " + save_path)
 
         try:
-            if self.model.ema:
-                self.model.ema.copy_ema_to(self.parameters, store_temp=True)
-
-            # Special case for schedule-free optimizers.
+            # Special case for schedule-free optimizers. eval() goes before the EMA weights are copied in, as in end()
+            # and sampling: after them, it moved the EMA weights towards the optimizer's z sequence
             if self.config.optimizer.optimizer.is_schedule_free:
                 torch.clear_autocast_cache()
                 self.model.optimizer.eval()
+
+            if self.model.ema:
+                self.model.ema.copy_ema_to(self.parameters, store_temp=True)
+
             self.model_saver.save(
                 model=self.model,
                 model_type=self.config.model_type,
@@ -576,9 +578,6 @@ class GenericTrainer(BaseTrainer):
                 output_model_destination=save_path,
                 dtype=self.config.output_dtype.torch_dtype()
             )
-            if self.config.optimizer.optimizer.is_schedule_free:
-                torch.clear_autocast_cache()
-                self.model.optimizer.train()
         except Exception:
             traceback.print_exc()
             tqdm.write("Could not save model. Check your disk space!")
@@ -593,6 +592,10 @@ class GenericTrainer(BaseTrainer):
         finally:
             if self.model.ema:
                 self.model.ema.copy_temp_to(self.parameters)
+            # also after a failed save, which used to leave the optimizer in eval mode for the rest of the training
+            if self.config.optimizer.optimizer.is_schedule_free:
+                torch.clear_autocast_cache()
+                self.model.optimizer.train()
 
         torch_gc()
 

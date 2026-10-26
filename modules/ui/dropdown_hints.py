@@ -35,7 +35,7 @@ PEFT_TYPE = (
     "LoRA: two low-rank matrices per layer, optionally with DoRA (weight decomposition). "
     "LoHa: the Hadamard product of two low-rank pairs; more expressive at the same rank. "
     "LoKr: a Kronecker product; very compact, optionally with DoRA. "
-    "OFT v2: a learned block-wise rotation of the weights, which keeps their norms."
+    "OFT v2: a learned block-wise rotation of the weights, which keeps their norms (DoRA OFT adds a learned scale per output channel)."
 )
 
 LEARNING_RATE_SCHEDULER = (

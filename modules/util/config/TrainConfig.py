@@ -568,6 +568,7 @@ class TrainConfig(BaseConfig):
     # oft
     oft_block_size: int
     oft_block_share: bool
+    dora_oft: bool
     oft_scaled: bool
     oft_cans: bool
 
@@ -1298,6 +1299,7 @@ class TrainConfig(BaseConfig):
         # oft
         data.append(("oft_block_size", 32, int, False))
         data.append(("oft_block_share", False, bool, False))
+        data.append(("dora_oft", False, bool, False))
         data.append(("oft_scaled", False, bool, False))
         data.append(("oft_cans", False, bool, False))
 

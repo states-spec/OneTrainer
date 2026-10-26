@@ -1432,7 +1432,7 @@ class TrainConfig(BaseConfig):
         data.append(("oft_block_size", 32, int, False))
         data.append(("oft_block_share", False, bool, False))
         data.append(("dora_oft", False, bool, False))
-        data.append(("oft_scaled", False, bool, False))
+        data.append(("oft_scaled", True, bool, False))
         data.append(("oft_cans", False, bool, False))
 
         # lokr

@@ -264,6 +264,80 @@ def allocator(ctx: Ctx, rec: Rec):
                  "undervolt, temperature) problem, not an allocator setting")
 
 
+@child_task("mem_pool_checks")
+def mem_pool_checks(ctx: Ctx) -> dict:
+    """the offloading check (its caches go into MemPools) and a model part moved into its own MemPool and back, as
+    BaseModel._move_part does, in this process's OT_ROCM_MEM_POOLS setting, after an allocation churn"""
+    import copy
+
+    from modules.util.rocm_check.framework import REGISTRY
+    from modules.util.torch_util import create_mem_pool, mem_pool_context, supports_mem_pool
+
+    alloc_pattern(ctx)
+    torch.cuda.empty_cache()
+    results = {}
+    for c in REGISTRY:
+        if not c.name.startswith("layer + activation offloading"):
+            continue
+        rec = Rec()
+        try:
+            c.fn(ctx, rec)
+        except Exception as e:
+            rec.fail(f"{type(e).__name__}: {e}")
+        results[c.name] = {"status": rec.status, "failures": [line for line in rec.lines if line.startswith("FAIL")]}
+
+    rec = Rec()
+    try:
+        torch.manual_seed(0)
+        part = nn.Sequential(nn.Linear(1024, 4096), nn.GELU(), nn.Linear(4096, 1024))
+        original = copy.deepcopy(part.state_dict())
+        x = _rand(ctx, 256, 1024, dtype=torch.float32, seed=1)
+        expected = copy.deepcopy(part).to(ctx.device)(x)
+        worst, identical = 0.0, True
+        for _ in range(3):
+            pool = create_mem_pool(ctx.device)
+            with mem_pool_context(pool, device=ctx.device):
+                part.to(ctx.device)
+            worst = max(worst, rel_err(part(x), expected))
+            part.to("cpu")
+            del pool
+            torch.cuda.empty_cache()
+            identical &= all(torch.equal(v, original[k]) for k, v in part.state_dict().items())
+        rec.expect(worst < 1e-5, f"output vs a part outside a MemPool rel err {worst:.1e}")
+        rec.expect(identical, "weights bit-identical after 3 moves into a MemPool and back")
+    except Exception as e:
+        rec.fail(f"{type(e).__name__}: {e}")
+    results["model part in its own MemPool"] = {"status": rec.status,
+                                                "failures": [line for line in rec.lines if line.startswith("FAIL")]}
+    return {"checks": results, "pools": supports_mem_pool(ctx.device)}
+
+
+@check(SECTION, "mem_pool: allocations with and without MemPools (OT_ROCM_MEM_POOLS), correctness", gpu_only=True,
+       note="runs the offloading check again with and without the MemPools offloading and part moves use")
+def mem_pools(ctx: Ctx, rec: Rec):
+    rec.info()
+    wrong = {}
+    for name, value in (("without MemPools", "false"), ("MemPools", "true")):
+        result = run_child(ctx, "mem_pool_checks", {"OT_ROCM_MEM_POOLS": value}, timeout=1800.0)
+        if "error" in result:
+            rec.fail(f"{name}: {result['error']}")
+            continue
+        if ctx.is_rocm:
+            rec.expect(result["pools"] == (value == "true"),
+                       f"OT_ROCM_MEM_POOLS={value}: OneTrainer {'uses' if result['pools'] else 'does not use'} MemPools")
+        wrong[name] = 0
+        for check_name, r in result["checks"].items():
+            wrong[name] += len(r["failures"])
+            rec.expect(not r["failures"], f"{name}: {check_name}: {r['status']}"
+                       + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else ""))
+    if not ctx.is_rocm:
+        rec.line("(outside ROCm OneTrainer always uses MemPools on the native allocator; OT_ROCM_MEM_POOLS changes nothing)")
+    elif wrong.get("MemPools") and wrong.get("without MemPools") == 0:
+        rec.fail("MemPools give wrong results on this GPU while normal allocations don't: keep OT_ROCM_MEM_POOLS unset")
+    elif wrong.get("MemPools") == 0 and wrong.get("without MemPools") == 0:
+        rec.line("MemPools gave correct results here: OT_ROCM_MEM_POOLS=true can be used")
+
+
 class _DiTBlock(nn.Module):
     """a generic pre-norm transformer block (attention + MLP), the shape most of the DiT models share"""
 

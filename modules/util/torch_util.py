@@ -1,4 +1,7 @@
+import contextlib
 import gc
+import os
+import time
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -13,6 +16,40 @@ accelerator = accelerate.Accelerator()
 default_device = accelerator.device
 
 torch_version = packaging.version.parse(torch.__version__)
+
+@contextlib.contextmanager
+def timed(label: str, enabled: bool = True):
+    # wall-clock timing around a block; sync the compute device before and after so the measurement includes the
+    # async device transfer + (re)quantization rather than just the launch overhead. Forces a cuda sync per block,
+    # so enable only for ad-hoc profiling, not on the hot per-step path.
+    if not enabled:
+        yield
+        return
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    start = time.perf_counter()
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    print(f"[timing] {label}: {time.perf_counter() - start:.3f}s")
+
+
+def supports_mem_pool(device: torch.device) -> bool:
+    if device.type != "cuda" or torch.cuda.memory.get_allocator_backend() != "native":
+        return False
+    # ROCm: off unless OT_ROCM_MEM_POOLS=true. Dedicated MemPools are not verified there yet (expandable_segments, another
+    # allocator mode, gave wrong results on an RX 7900 XTX); `rocm_check --only mem_pool` compares both on the GPU
+    return not torch.version.hip or os.environ.get("OT_ROCM_MEM_POOLS", "false").lower() == "true"
+
+
+def create_mem_pool(device: torch.device):
+    # a dedicated MemPool the caller can allocate into; None on unsupported devices or allocators (cpu/mps)
+    return torch.cuda.MemPool() if supports_mem_pool(device) else None
+
+
+def mem_pool_context(mem_pool, device: torch.device):
+    # route allocations made in this context into the given MemPool; no-op when it is None. Ensure "cuda" works
+    return torch.cuda.use_mem_pool(mem_pool, device=device.index) if mem_pool is not None else nullcontext()
 
 
 def state_dict_has_prefix(state_dict: dict | None, prefix: str):

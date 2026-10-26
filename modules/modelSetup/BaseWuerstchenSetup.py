@@ -61,10 +61,14 @@ class BaseWuerstchenSetup(
         # (stable-cascade prior fp16-disable, effnet bf16-on-fp16).
         if config.prior.checkpointing_enabled():
             model.prior_prior.enable_gradient_checkpointing()
+        # conductors go into model.offload_conductor, keyed by the part's stem, where BaseModel._move_part finds them
+        conductors = {
+            "prior_text_encoder": enable_checkpointing_for_clip_encoder_layers(
+                model.prior_text_encoder, config, config.text_encoder),
+        }
         if config.prior.offloading_enabled():
-            model.prior_prior_offload_conductor = enable_checkpointing_for_wuerstchen_prior(model.prior_prior, config, config.prior)
-        model.prior_text_encoder_offload_conductor = \
-            enable_checkpointing_for_clip_encoder_layers(model.prior_text_encoder, config, config.text_encoder)
+            conductors["prior_prior"] = enable_checkpointing_for_wuerstchen_prior(model.prior_prior, config, config.prior)
+        model.offload_conductor.update({stem: c for stem, c in conductors.items() if c is not None})
 
         if config.force_circular_padding:
             apply_circular_padding_to_conv2d(model.decoder_vqgan)

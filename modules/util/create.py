@@ -220,6 +220,16 @@ def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
         print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The config has it on; it is turned off for this run.")
         optimizer_config.nesterov = False
 
+    # adv_optm 2.5.13-2.5.16: Adopt_adv's fp16 state fails in its first step together with these (a dtype error,
+    # "expected dtype c10::Half for `end`"), after the model has loaded and the cache is built
+    if optimizer_config.optimizer == Optimizer.ADOPT_ADV and (optimizer_config.state_precision or "").lower() == "fp16":
+        clashing = [title for title, on in (("Nesterov", optimizer_config.nesterov),
+                                            ("Factored 2nd Moment", optimizer_config.factored_2nd)) if on]
+        if clashing:
+            raise ValueError(f'State Precision "fp16" does not work with {" or ".join(clashing)} in ADOPT_ADV: '
+                             f'adv_optm fails in the first step. Pick another State Precision, or turn '
+                             f'{" and ".join(clashing)} off.')
+
 
 def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
     # a resumed group keeps the backup's settings, so a backup made with Nesterov on would still use it

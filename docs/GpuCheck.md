@@ -35,7 +35,7 @@ results up to the check that was running (the report names it). The exit code is
    - bitsandbytes: NFLOAT_4 and INT_8 layers, 8-bit AdamW
    - bf16 stochastic rounding
 3. **Training code** on the GPU:
-   - LoRA, DoRA, LoKr (also with DoRA and the vec trick), LoHa and OFT v2, forward and backward under bf16 autocast
+   - LoRA, DoRA, LoKr (also with DoRA and the vec trick), LoHa and OFT v2 (also with spectral norm clipping), forward and backward under bf16 autocast
    - optimizers built by OneTrainer's own `create_optimizer` (ADV optimizers with every state precision, AdamW,
      schedule-free ones), with a save/resume round trip like a backup
    - layer and activation offloading through the real `LayerOffloadConductor`: same loss and gradients as without

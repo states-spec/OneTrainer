@@ -102,6 +102,11 @@ class BaseLoraTabView:
                                   tooltip="Computes the exact Cayley rotation with a Chebyshev-accelerated Newton-Schulz iteration (CANS) instead of the default 5-term series, which drifts from an orthogonal matrix at larger rotations. Off by default: PEFT, the reference implementation of this format, applies the 5-term series, so use this only if your inference applies the exact transform. Same file format; the extra cost is small next to the layer itself.")
             self.components.switch(master, 3, 4, ui_state, "oft_cans")
 
+            # Clip OFT max norm
+            self.components.label(master, 5, 0, "Spectral Norm Clipping",
+                                  tooltip="Limits the spectral norm of the OFT matrix using a power iteration estimate. Start at 0.95 for longer runs. Lower values limit adaptation; keep below 1 for stability. Leave blank to disable (default). The file gets one extra clipped_oft value per layer: inference has to apply the same clipping, or the rotation differs once the limit is reached.")
+            self.components.entry(master, 5, 1, ui_state, "oft_clipped_norm")
+
             # Dropout Percentage
             self.components.label(master, 2, 0, "Dropout Probability",
                                   tooltip="Dropout probability. This percentage of the rotated adapter nodes that will be randomly restored to the base model initial statue. Helps with overfitting. 0 disables, 1 maximum.")

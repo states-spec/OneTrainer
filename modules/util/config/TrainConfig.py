@@ -629,6 +629,7 @@ class TrainConfig(BaseConfig):
     dora_oft: bool
     oft_scaled: bool
     oft_cans: bool
+    oft_clipped_norm: float | None
 
     # lokr
     lokr_dim: int
@@ -976,7 +977,8 @@ class TrainConfig(BaseConfig):
     def __migration_12(self, data: dict) -> dict:
         # upstream's __migration_11 (preview-2): the fork had already used version 12 for the adv_optm renames, so the
         # output naming moved one version up here. setdefault keeps run_name/final_output_dir of a config upstream saved
-        # at its own version 12.
+        # at its own version 12. Upstream's __migration_12 (13 there) only sets oft_clipped_norm to its default None,
+        # which a missing key keeps anyway, so the fork stays at 13.
         migrated = deepcopy(data)
         # The input-tooltips branch also used v11, before per-component offloading.
         if any(key in migrated for key in (
@@ -1432,8 +1434,9 @@ class TrainConfig(BaseConfig):
         data.append(("oft_block_size", 32, int, False))
         data.append(("oft_block_share", False, bool, False))
         data.append(("dora_oft", False, bool, False))
-        data.append(("oft_scaled", True, bool, False))
+        data.append(("oft_scaled", False, bool, False))
         data.append(("oft_cans", False, bool, False))
+        data.append(("oft_clipped_norm", None, float, True))
 
         # lokr
         data.append(("lokr_dim", 16, int, False))

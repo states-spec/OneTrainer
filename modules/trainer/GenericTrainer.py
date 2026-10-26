@@ -30,6 +30,7 @@ from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.FileType import FileType
 from modules.util.enum.ModelFormat import ModelFormat
+from modules.util.enum.ModelType import PeftType
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.profiling_util import PeakMemoryRecorder, TorchMemoryRecorder, TorchProfiler
@@ -102,6 +103,10 @@ class GenericTrainer(BaseTrainer):
                 f"Loss weight function {self.config.loss_weight_fn} doesn't work with {self.config.model_type}. "
                 f"Set loss_weight_fn to one of: {', '.join(str(w) for w in loss_weights)}."
             )
+        # a limit of 0 divides 0 by 0 on the zero-initialized rotations of the first step (NaN loss after caching)
+        if self.config.training_method == TrainingMethod.LORA and self.config.peft_type == PeftType.OFT_2 \
+                and self.config.oft_clipped_norm is not None and self.config.oft_clipped_norm <= 0:
+            raise ValueError("oft_clipped_norm must be greater than 0. Leave it empty to turn spectral norm clipping off.")
         self.__check_device_support()
         create.check_optimizer_config(self.config.optimizer)
 

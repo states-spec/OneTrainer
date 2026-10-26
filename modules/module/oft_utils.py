@@ -46,9 +46,9 @@ class OFTRotationModule(nn.Module):
         block_share=False,
         oft_scaled=False,
         use_cayley_neumann=True,
-        num_cayley_neumann_terms=5,
         dropout_probability=0.0,
         oft_cans=False,
+        oft_clipped_norm: float | None = None,
     ):
         super().__init__()
         self.r = r
@@ -64,13 +64,22 @@ class OFTRotationModule(nn.Module):
             self.register_buffer("scaled_oft", torch.tensor(True))
         self.oft_scaled = oft_scaled
         self.use_cayley_neumann = use_cayley_neumann
-        self.num_cayley_neumann_terms = num_cayley_neumann_terms
         self.oft_cans = oft_cans
         # Create indices for upper triangle (excluding diagonal)
         rows, cols = torch.triu_indices(block_size, block_size, 1)
         self.register_buffer("rows", rows, persistent=False)
         self.register_buffer("cols", cols, persistent=False)
         self.dropout = MultiplicativeDropoutLayer(p=dropout_probability)
+        self.oft_clipped_norm = oft_clipped_norm
+        if oft_clipped_norm is not None:
+            self.register_buffer("clipped_oft", torch.tensor(self.oft_clipped_norm))
+            # Initialize states for Spectral Normalization via Power Iteration
+            u = torch.randn(r, block_size)
+            u = u / u.norm(dim=1, keepdim=True).clamp_min(1e-12)
+            self.register_buffer("u_state", u, persistent=False)
+            v = torch.randn(r, block_size)
+            v = v / v.norm(dim=1, keepdim=True).clamp_min(1e-12)
+            self.register_buffer("v_state", v, persistent=False)
 
 
     def _pytorch_skew_symmetric(self, vec, block_size):
@@ -123,9 +132,27 @@ class OFTRotationModule(nn.Module):
 
         return X
 
+    @torch.no_grad()
+    def _spectral_norm(self, Q_skew):
+        u = self.u_state.unsqueeze(-1).to(Q_skew.dtype)
+        v = self.v_state.unsqueeze(-1).to(Q_skew.dtype)
+        # Update v (Right Singular Vector)
+        v_raw = torch.bmm(Q_skew.mT, u)
+        v_norm = torch.linalg.vector_norm(v_raw, dim=1, keepdim=True)
+        candidate_v = v_raw / v_norm.clamp_min(1e-8)
+        next_v = torch.where(v_norm >= 1e-6, candidate_v, v)
+        # Update u (Left Singular Vector)
+        u_raw = torch.bmm(Q_skew, next_v)
+        u_norm = torch.linalg.vector_norm(u_raw, dim=1, keepdim=True)
+        candidate_u = u_raw / u_norm.clamp_min(1e-8)
+        next_u = torch.where(u_norm >= 1e-6, candidate_u, u)
+        if self.training:
+            self.v_state.copy_(next_v.squeeze(-1))
+            self.u_state.copy_(next_u.squeeze(-1))
+        return next_v, next_u
+
     def _cayley_batch(
-        self, Q: torch.Tensor, block_size: int, use_cayley_neumann: bool = True, num_neumann_terms: int = 5,
-        oft_cans: bool = False,
+        self, Q: torch.Tensor, block_size: int, use_cayley_neumann: bool = True, oft_cans: bool = False,
     ) -> torch.Tensor:
         """
         Perform the Cayley parametrization on a batch of skew-symmetric matrices.
@@ -135,32 +162,28 @@ class OFTRotationModule(nn.Module):
 
         Q_skew = self._pytorch_skew_symmetric(Q, block_size)
 
+        if self.oft_clipped_norm is not None:
+            # The Neumann series only converges if the spectral norm ||Q||_2 < 1.
+            # We estimate the spectral norm using a single step of Power Iteration.
+            v_norm, u_norm = self._spectral_norm(Q_skew)
+            # Estimate sigma (The spectral norm)
+            u_raw_grad = torch.bmm(Q_skew, v_norm)
+            sigma = torch.sum(u_norm * u_raw_grad, dim=1, keepdim=True)
+            max_norm = self.oft_clipped_norm
+            Q_skew = Q_skew * (max_norm / torch.clamp(sigma, min=max_norm))
+
         if oft_cans or not use_cayley_neumann:
             # exact Cayley transform (I + Q)(I - Q)^-1 as the polar factor of (I + Q)^2: |I + Q|^2 = I - Q^2
             eye_matrix = torch.eye(block_size, device=Q_skew.device, dtype=Q_skew.dtype).expand(b, -1, -1)
             G = eye_matrix + 2 * Q_skew + torch.bmm(Q_skew, Q_skew)
             # bf16 reaches its precision floor (orthogonality error ~1e-2) in 5 steps, fp32 ~1e-6 in 7
             R = self._cans_newton_schulz_iteration(G, steps=5 if G.dtype == torch.bfloat16 else 7)
-        elif num_neumann_terms == 5:
+        else:
             # I + 2Q + 2Q^2 + 2Q^3 + Q^4 in Horner form: two matmuls instead of three
             eye_matrix = torch.eye(block_size, device=Q.device, dtype=Q.dtype).expand(b, -1, -1)
             Q_squared = torch.bmm(Q_skew, Q_skew)
             inner = eye_matrix * 2.0 + Q_skew * 2.0 + Q_squared
             R = eye_matrix + Q_skew * 2.0 + torch.bmm(Q_squared, inner)
-        else:
-            R = torch.eye(block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
-            if num_neumann_terms > 1:
-                R.add_(Q_skew, alpha=2.0)
-                if num_neumann_terms > 2:
-                    Q_squared = torch.bmm(Q_skew, Q_skew)
-                    R.add_(Q_squared, alpha=2.0)
-
-                    Q_power = Q_squared
-                    for _ in range(3, num_neumann_terms - 1):
-                        Q_power = torch.bmm(Q_power, Q_skew)
-                        R.add_(Q_power, alpha=2.0)
-                    Q_power = torch.bmm(Q_power, Q_skew)
-                    R.add_(Q_power)
 
         return R.to(previous_dtype)
 
@@ -175,13 +198,16 @@ class OFTRotationModule(nn.Module):
         effective_weight = self.weight / scaling_factor
 
         orth_rotate = self._cayley_batch(
-            effective_weight, self.block_size, self.use_cayley_neumann, self.num_cayley_neumann_terms, self.oft_cans
+            effective_weight, self.block_size, self.use_cayley_neumann, self.oft_cans
         )
         orth_rotate = self.dropout(orth_rotate)
 
         rank = self.in_features // self.block_size if self.block_share else self.r
         batch_dims = x.shape[:-1]
         x_reshaped = x.reshape(*batch_dims, rank, self.block_size)
+
+        # Ensure rotation matrix matches the input activation dtype
+        orth_rotate = orth_rotate.to(x_reshaped.dtype)
 
         if self.block_share:
             orth_rotate = orth_rotate.repeat(rank, 1, 1)

@@ -35,6 +35,9 @@ def _adapter_factories(device: torch.device):
         "LoKr + DoRA": lambda lin, dev: LoKrModule("p", lin, 16, 1.0, False, 16, False, True, False, False, dev),
         "LoHa": lambda lin, dev: LoHaModule("p", lin, 16, 1.0),
         "OFT v2": lambda lin, dev: OFTModule("p", lin, 32, False, False, dropout_probability=0.0),
+        # the check's weights give a rotation norm of ~0.2, so a limit of 0.05 keeps the clipping active
+        "OFT v2 clipped": lambda lin, dev: OFTModule("p", lin, 32, False, False, oft_clipped_norm=0.05,
+                                                     dropout_probability=0.0),
     }
 
 

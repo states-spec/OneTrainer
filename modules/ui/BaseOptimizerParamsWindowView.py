@@ -25,7 +25,7 @@ def _decays(value: Callable[[str], Any]) -> bool:
 
 
 # settings that only take effect together with another one: the optimizer windows grey them out while it is off.
-# Only where the setting provably has no effect then (adv_optm 2.5.13)
+# Only where the setting provably has no effect then (adv_optm 2.5.13-2.5.16)
 OPTION_DEPENDENCIES: dict[str, Callable[[Callable[[str], Any]], bool]] = {
     'nesterov_coef': lambda value: _on(value('nesterov')),
     'centered_wd_mode': lambda value: _number(value('centered_wd')) > 0,

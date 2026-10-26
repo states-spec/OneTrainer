@@ -30,13 +30,12 @@ _NONE_IS_A_SETTING = {
 
 
 def adv_state_precisions(optimizer: Optimizer) -> list[str]:
-    # the adv_optm state_precision modes that train with this optimizer. In adv_optm 2.5.13 "fp16" fails in every
-    # optimizer except Adopt_adv (a dtype error, or NaN in Prodigy_adv), and "factored" always fails in AdaMuon_adv
+    # the adv_optm state_precision modes that train with this optimizer. In adv_optm 2.5.13-2.5.16 "fp16" fails in
+    # every optimizer except Adopt_adv (a dtype error, or NaN in Prodigy_adv). "factored" failed in AdaMuon_adv up to
+    # 2.5.13 (original_shape unbound) and works since 2.5.16
     precisions = ["auto", "fp32", "factored", "bf16_sr", "int8_sr"]
     if optimizer == Optimizer.ADOPT_ADV:
         precisions.append("fp16")
-    if optimizer == Optimizer.ADAMUON_ADV:
-        precisions.remove("factored")
     return precisions
 
 
@@ -652,7 +651,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "muon_adam_lr": 1e-6,
         "muon_te1_adam_lr": None,
         "muon_te2_adam_lr": None,
-        "nesterov": False,
+        "nesterov": True,
         "nesterov_coef": None,
         "use_atan2": False,
         "normuon_variant": True,

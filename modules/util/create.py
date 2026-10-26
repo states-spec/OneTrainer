@@ -146,7 +146,7 @@ def _adv_common_kwargs(optimizer_config: TrainOptimizerConfig, nesterov_default:
     # settings every adv_optm optimizer except Lion_adv takes
     state_precision = _adv_state_precision(optimizer_config.optimizer, optimizer_config.state_precision)
     if optimizer_config.optimizer == Optimizer.SINKSGD_ADV and not optimizer_config.momentum:
-        # without momentum SinkSGD_adv keeps no state to factor, and adv_optm 2.5.13 fails on "factored" then
+        # without momentum SinkSGD_adv keeps no state to factor, and adv_optm 2.5.13-2.5.16 fails on "factored" then
         state_precision = "auto" if state_precision == "factored" else state_precision
     return {
         "orthogonal_gradient": _adv_orthograd_mode(optimizer_config.orthogonal_gradient),
@@ -204,7 +204,7 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
                     state[key] = saved_value.to(device=value.device, copy=True)
 
 
-# adv_optm 2.5.13's Prodigy_adv keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
+# adv_optm's Prodigy_adv (2.5.13-2.5.16) keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
 # (exp_avg.lerp_(grad, 1 - coef)). That term is 1/d times too large, so every step moves each weight by about
 # 0.1 * lr whatever d is: at lr 1 a LoRA turned to noise within the first steps. The other adv_optm optimizers keep
 # their momentum in gradient units and are not affected.

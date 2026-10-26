@@ -1,5 +1,7 @@
+import html
 import locale
 import os
+import re
 import signal
 import sys
 from abc import ABCMeta
@@ -94,6 +96,12 @@ def _is_dark(app: QApplication, theme: UITheme) -> bool:
     if theme == UITheme.SYSTEM:
         return app.styleHints().colorScheme() == Qt.ColorScheme.Dark
     return theme == UITheme.DARK
+
+
+def format_tooltip(text: str) -> str:
+    # wrap tooltips after 45 characters, supported by studys size
+    wrapped = re.sub(r"(.{65}\S*)[ \t]+", r"\1\n", text)
+    return f'<p style="white-space: pre;">{html.escape(wrapped)}</p>'
 
 
 def is_dark_theme() -> bool:

@@ -14,6 +14,12 @@ WEIGHT_DTYPE = (
     "Not every part offers every choice."
 )
 
+RUN_NAME_MODE = (
+    "Default: <training method>_<date and time>, new for each run. "
+    "Friendly: two random words, new for each run. "
+    "Custom: the name in the field, kept for every run."
+)
+
 OUTPUT_DTYPE = (
     "Precision to use when saving the output model. "
     "bfloat16: the range of float32 at half the size, the usual choice. "

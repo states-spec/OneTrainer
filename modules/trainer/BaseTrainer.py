@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 from abc import ABCMeta, abstractmethod
 
@@ -12,6 +11,7 @@ from modules.util import create
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.tensorboard_util import TensorboardProcess
 from modules.util.TimedActionMixin import TimedActionMixin
 from modules.util.TrainProgress import TrainProgress
 
@@ -23,7 +23,7 @@ class BaseTrainer(
     metaclass=ABCMeta,
 ):
 
-    tensorboard_subprocess: subprocess.Popen | None
+    tensorboard_subprocess: TensorboardProcess | None
 
     def __init__(self, config: TrainConfig, callbacks: TrainCallbacks, commands: TrainCommands):
         super().__init__()
@@ -98,7 +98,7 @@ class BaseTrainer(
         if self.config.tensorboard_expose:
             tensorboard_args.append("--bind_all")
 
-        self.tensorboard_subprocess = subprocess.Popen(tensorboard_args)
+        self.tensorboard_subprocess = TensorboardProcess(tensorboard_args)
 
     def _stop_tensorboard(self):
         # safe to call more than once, or when tensorboard was never started (e.g. on an error path)

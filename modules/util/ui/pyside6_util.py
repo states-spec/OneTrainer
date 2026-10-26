@@ -152,6 +152,13 @@ def create_application() -> QApplication:
     # Qt reads the scale factor once, when the application is created. A value set in the environment wins.
     if settings.ui_scale != 1.0 and "QT_SCALE_FACTOR" not in os.environ:
         os.environ["QT_SCALE_FACTOR"] = str(settings.ui_scale)
+    # On desktops without the xdg-desktop-portal Settings interface, Qt spams two
+    # "qt.qpa.theme.gnome: dbus reply error ... org.freedesktop.portal.Settings"
+    # lines while probing for the system color scheme. Silence just that category;
+    # the rules string is read when Qt's logging initializes at QApplication init.
+    _gnome_theme_rule = "qt.qpa.theme.gnome=false"
+    existing_rules = os.environ.get("QT_LOGGING_RULES")
+    os.environ["QT_LOGGING_RULES"] = f"{existing_rules};{_gnome_theme_rule}" if existing_rules else _gnome_theme_rule
 
     app = QApplication(sys.argv)
     # QApplication initializes the C locale from the environment (setlocale(LC_ALL, "")), which sets LC_NUMERIC

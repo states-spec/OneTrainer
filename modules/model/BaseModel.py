@@ -20,6 +20,7 @@ from modules.util.torch_util import (
     create_mem_pool,
     device_equals,
     mem_pool_context,
+    print_fragmentation,
     supports_mem_pool,
     torch_gc,
     vram_summary,
@@ -190,11 +191,14 @@ class BaseModel(metaclass=ABCMeta):
         # have nothing to reclaim. Each part reports whether it moved rather than the model tracking residency,
         # so the answer always comes from the component that did (or didn't) do the move.
         moved = False
+
         for part in parts or self.model_type.model_parts():
             moved |= self._move_part(part, self.temp_device)
         if moved:
             torch_gc()
             _log_vram(self.train_device, f"after unloading {', '.join(parts) if parts else 'all parts'}")
+        if (self.train_config is not None and self.train_config.debug_mode) or os.environ.get("OT_DEBUG_PROFILES") == "1":
+            print_fragmentation(f"evict({', '.join(parts) or 'all'})")
 
     def materialize_only(self, *parts: str):
         # Materialize exactly `parts` on train_device; evict every other component in ModelType.model_parts()

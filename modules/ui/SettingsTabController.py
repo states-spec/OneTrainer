@@ -53,6 +53,7 @@ class SettingsTabController:
         defaults = UISettingsConfig.default_values()
         defaults.window_width = self.settings.window_width
         defaults.window_height = self.settings.window_height
+        defaults.last_tab = self.settings.last_tab
         ui_state.update(defaults)
 
     def __on_change(self):

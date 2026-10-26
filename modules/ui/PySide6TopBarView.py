@@ -8,7 +8,7 @@ from modules.util.ui import pyside6_components
 from modules.util.ui.pyside6_util import file_dialog_options
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QWidget
+from PySide6.QtWidgets import QFileDialog, QPushButton, QWidget
 
 
 class PySide6TopBarView(BaseTopBarView, QWidget):
@@ -21,6 +21,7 @@ class PySide6TopBarView(BaseTopBarView, QWidget):
             change_model_type_callback: Callable[[ModelType], None],
             change_training_method_callback: Callable[[TrainingMethod], None],
             load_preset_callback: Callable[[], None],
+            toggle_theme_callback: Callable[[], None] | None = None,
     ):
         QWidget.__init__(self, master)
         BaseTopBarView.__init__(self, pyside6_components)
@@ -34,6 +35,16 @@ class PySide6TopBarView(BaseTopBarView, QWidget):
 
         self.build(self.frame, master, controller, ui_state,
                    change_model_type_callback, change_training_method_callback, load_preset_callback)
+
+        if toggle_theme_callback is not None:
+            # flips between light and dark; the Settings tab has the full theme choice (incl. System)
+            self.theme_button = pyside6_components.button(
+                self.frame, 0, 8, "◐", toggle_theme_callback,
+                tooltip="Switch between light and dark mode", sticky="v",
+            )
+            # an empty button's height gives a square independent of the glyph's metrics
+            side = QPushButton().sizeHint().height()
+            self.theme_button.setFixedSize(side, side)
 
     def _setup_frame_column_weight(self):
         pyside6_components._layout(self.frame).setColumnStretch(5, 1)

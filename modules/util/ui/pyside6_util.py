@@ -96,6 +96,12 @@ def _is_dark(app: QApplication, theme: UITheme) -> bool:
     return theme == UITheme.DARK
 
 
+def is_dark_theme() -> bool:
+    # whether the UI shows the dark palette now (with the System theme, whatever the OS reports)
+    app = QApplication.instance()
+    return app is not None and _current_theme is not None and _is_dark(app, _current_theme)
+
+
 def apply_theme(app: QApplication, theme: UITheme):
     global _current_theme
     _current_theme = theme

@@ -70,7 +70,7 @@ def int_mm(ctx: Ctx, rec: Rec):
 
 
 @check(SECTION, "OneTrainer Triton 8-bit matmul (W8A8 backward)", gpu_only=True,
-       note="the first run compiles the kernel in its 16 autotune variants: a few minutes")
+       note="the first run compiles the kernel in all its autotune variants: a few minutes")
 def triton_mm_8bit(ctx: Ctx, rec: Rec):
     from modules.util.torch_util import fp8_matmul_supported
     from modules.util.triton_mm_8bit import mm_8bit
@@ -80,9 +80,26 @@ def triton_mm_8bit(ctx: Ctx, rec: Rec):
     w = torch.randint(-127, 128, (k, n), generator=ctx.generator(2), dtype=torch.int8)
     ref = a.long() @ w.long()
     ad, wd = a.to(ctx.device), w.to(ctx.device)
-    rec.expect(torch.equal(mm_8bit(ad, wd).cpu().long(), ref), "int8, row-major rhs: exact")
+    rec.expect(torch.equal(mm_8bit(ad, wd, torch.int32).cpu().long(), ref), "int8, row-major rhs: exact")
     wt = w.T.contiguous().to(ctx.device).T  # same values, strided like a transposed weight
-    rec.expect(torch.equal(mm_8bit(ad, wt).cpu().long(), ref), "int8, strided rhs: exact")
+    rec.expect(torch.equal(mm_8bit(ad, wt, torch.int32).cpu().long(), ref), "int8, strided rhs: exact")
+    # a K that is no multiple of the kernel's block size: zero-padded before the main loop
+    k_odd = k - 72
+    ref_odd = a[:, :k_odd].long() @ w[:k_odd].long()
+    rec.expect(torch.equal(mm_8bit(ad[:, :k_odd].contiguous(), wd[:k_odd], torch.int32).cpu().long(), ref_odd),
+               f"int8, K={k_odd} (padded): exact")
+    # the epilogue the W8A8 layers use: per-row and per-column scales plus a low-rank (LoRA) term, in float
+    r = 16
+    scale_m = (torch.rand(m, generator=ctx.generator(7)) * 1e-3 + 1e-4).to(ctx.device)
+    scale_n = (torch.rand(n, generator=ctx.generator(8)) * 1e-2 + 1e-3).to(ctx.device)
+    lora_xd = _rand(ctx, m, r, dtype=torch.bfloat16, seed=9).to(ctx.device)
+    lora_up = _rand(ctx, r, n, dtype=torch.bfloat16, scale=0.1, seed=10).to(ctx.device)
+    ref_epi = ref.double() * scale_m.cpu().double()[:, None] * scale_n.cpu().double()[None, :] \
+        + lora_xd.cpu().double() @ lora_up.cpu().double()
+    out = mm_8bit(ad, wd, torch.float32, scale_m=scale_m, scale_n=scale_n, lora_xd=lora_xd, lora_up=lora_up)
+    err = rel_err(out, ref_epi)
+    # the LoRA inputs are bf16 (as in training), so their rounding sets the limit; a wrong epilogue is off by O(1)
+    rec.expect(err < 5e-3 and finite(out), f"int8 with scale + LoRA epilogue (W8A8 + LoRA): rel err {err:.2e} (limit 5e-3)")
 
     # the fp8 kernel only backs the float W8A8 types, which OneTrainer rejects on GPUs without fp8 matmul. There
     # Triton emulates fp8 through fp16, and compiling that took over 10 minutes per variant for gfx1100
@@ -91,7 +108,7 @@ def triton_mm_8bit(ctx: Ctx, rec: Rec):
         af = _rand(ctx, m, k, seed=3).clamp(-448, 448).to(torch.float8_e4m3fn)
         wf = _rand(ctx, k, n, seed=4).clamp(-448, 448).to(torch.float8_e4m3fn)
         afd, wfd = af.to(ctx.device), wf.to(ctx.device)
-        err = rel_err(mm_8bit(afd, wfd), af.double() @ wf.double())
+        err = rel_err(mm_8bit(afd, wfd, torch.float32), af.double() @ wf.double())
         rec.expect(err < 1e-4, f"fp8 e4m3: rel err {err:.2e}")
     else:
         rec.line("fp8 not tested: no fp8 matmul on this GPU, so OneTrainer never runs the fp8 kernel here")
@@ -99,13 +116,13 @@ def triton_mm_8bit(ctx: Ctx, rec: Rec):
     bf = _rand(ctx, m, k, dtype=torch.bfloat16, seed=5).to(ctx.device)
     wb = _rand(ctx, k, n, dtype=torch.bfloat16, seed=6).to(ctx.device)
     t_bf16 = ctx.bench(lambda: bf @ wb)
-    t_int8 = ctx.bench(lambda: mm_8bit(ad, wd))
-    t_int8_strided = ctx.bench(lambda: mm_8bit(ad, wt))
+    t_int8 = ctx.bench(lambda: mm_8bit(ad, wd, torch.int32))
+    t_int8_strided = ctx.bench(lambda: mm_8bit(ad, wt, torch.int32))
     rec.metric(f"{m}x{k}x{n} ms bf16 matmul", t_bf16)
     rec.metric(f"{m}x{k}x{n} ms triton int8", t_int8)
     rec.metric(f"{m}x{k}x{n} ms triton int8 strided", t_int8_strided)
     if fp8:
-        rec.metric(f"{m}x{k}x{n} ms triton fp8", ctx.bench(lambda: mm_8bit(afd, wfd)))
+        rec.metric(f"{m}x{k}x{n} ms triton fp8", ctx.bench(lambda: mm_8bit(afd, wfd, torch.float32)))
     rec.line(f"int8 is {t_bf16 / t_int8:.2f}x the speed of bf16 (>1 = faster)")
 
 
@@ -156,6 +173,25 @@ def w8a8_layers(ctx: Ctx, rec: Rec):
         t = ctx.bench(lambda layer=layer, xd=xd: layer(xd).backward(gd))
         rec.metric(f"{name} W8A8 fwd+bwd ms ({m}x{k}x{n})", t)
         rec.line(f"{name} W8A8 fwd+bwd is {t_ref / t:.2f}x the speed of bf16 ({t:.2f} vs {t_ref:.2f} ms)")
+
+        # a LoRA on this layer runs fused into its matmuls (forward_with_lora); compare with the layer's own forward
+        # plus LoRAModule's separate delta term, for the output and every gradient the training uses
+        r, alpha = 16, torch.tensor(16.0, device=ctx.device)
+        down = nn.Parameter(_rand(ctx, r, k, dtype=torch.bfloat16, scale=0.02, seed=11).to(ctx.device))
+        up = nn.Parameter(_rand(ctx, n, r, dtype=torch.bfloat16, scale=0.02, seed=12).to(ctx.device))
+        dropout = nn.Dropout(0.0)
+        xa = x.to(ctx.device, copy=True).requires_grad_()
+        ya = LinearW8A8.forward(layer, xa) + F.linear(F.linear(xa, down), up) * (alpha / r)
+        ya.backward(gd)
+        unfused = (ya.detach(), xa.grad.clone(), down.grad.clone(), up.grad.clone())
+        down.grad = up.grad = None
+        xb = x.to(ctx.device, copy=True).requires_grad_()
+        yb = layer.forward_with_lora(xb, down, up, dropout, alpha)
+        yb.backward(gd)
+        errs = [rel_err(a, b) for a, b in zip((yb, xb.grad, down.grad, up.grad), unfused, strict=True)]
+        rec.expect(max(errs) < 2e-2 and finite(yb) and finite(down.grad) and finite(up.grad),
+                   f"{name} W8A8 + LoRA fused vs separate: out {errs[0]:.1e}, dx {errs[1]:.1e}, d_down {errs[2]:.1e}, "
+                   f"d_up {errs[3]:.1e} (limit 2e-2)")
     rec.metric(f"bf16 linear fwd+bwd ms ({m}x{k}x{n})", t_ref)
 
     # bfloat16 A8: bfloat16 weights that can train (a full fine-tune); weights and activations are quantized to 8 bits

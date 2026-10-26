@@ -8,6 +8,8 @@ WEIGHT_DTYPE = (
     "int W8A8: int8 weights and activations (int8 matrix math). "
     "float W8A8: float8 weights and activations; needs fp8 hardware (NVIDIA sm89+, AMD gfx942/gfx950/RX 9000). "
     "compressed: also compressed with nvCOMP (NVIDIA only). "
+    "bfloat16 A8 int / float: bfloat16 weights (trainable, also in a full fine-tune), quantized with the activations "
+    "to 8 bits for each matrix multiplication; A8 float needs fp8 hardware like float W8A8. "
     "GGUF: keeps the quantization of a .gguf model file; GGUF A8 also quantizes the activations. "
     "Not every part offers every choice."
 )

@@ -214,16 +214,16 @@ class GenericTrainer(BaseTrainer):
         fp8_parts = []
         for part in self.config.model_type.model_parts():
             weight_dtype = getattr(self.config, part).weight_dtype
-            if weight_dtype.quantize_fpW8A8() or weight_dtype == DataType.GGUF_A8_FLOAT:
+            if weight_dtype.quantize_fpW8A8() or weight_dtype in (DataType.GGUF_A8_FLOAT, DataType.BFLOAT_16_A8_FLOAT):
                 fp8_parts.append(f"{part}: {weight_dtype}")
         train_device = torch.device(self.config.train_device)
         if fp8_parts and not fp8_matmul_supported(train_device):
             device_name = torch.cuda.get_device_name(train_device) if train_device.type == "cuda" else str(train_device)
             raise ValueError(
-                f"The float W8A8 weight data types ({', '.join(fp8_parts)}) compute in fp8, which {device_name} "
+                f"The float W8A8 / A8 weight data types ({', '.join(fp8_parts)}) compute in fp8, which {device_name} "
                 f"can't: that needs an NVIDIA GPU with compute capability 8.9 or newer, or an AMD Instinct MI300/MI350 "
                 f"or Radeon RX 9000 series GPU. Use float8 (W8) to store the weights in 8 bits and compute in the "
-                f"train data type, or int W8A8 / GGUF A8 int for int8 compute."
+                f"train data type, or int W8A8 / GGUF A8 int / bfloat16 A8 int for int8 compute."
             )
 
     def __save_config_to_workspace(self):

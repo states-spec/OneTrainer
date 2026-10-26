@@ -109,9 +109,10 @@ def triton_mm_8bit(ctx: Ctx, rec: Rec):
     rec.line(f"int8 is {t_bf16 / t_int8:.2f}x the speed of bf16 (>1 = faster)")
 
 
-@check(SECTION, "W8A8 linear layers forward+backward", gpu_only=True,
+@check(SECTION, "W8A8 and A8 linear layers forward+backward", gpu_only=True,
        note="reuses the Triton kernels compiled by the check before it")
 def w8a8_layers(ctx: Ctx, rec: Rec):
+    from modules.module.quantized.LinearA8 import LinearA8
     from modules.module.quantized.LinearW8A8 import LinearW8A8
     from modules.util.torch_util import fp8_matmul_supported
 
@@ -156,6 +157,29 @@ def w8a8_layers(ctx: Ctx, rec: Rec):
         rec.metric(f"{name} W8A8 fwd+bwd ms ({m}x{k}x{n})", t)
         rec.line(f"{name} W8A8 fwd+bwd is {t_ref / t:.2f}x the speed of bf16 ({t:.2f} vs {t_ref:.2f} ms)")
     rec.metric(f"bf16 linear fwd+bwd ms ({m}x{k}x{n})", t_ref)
+
+    # bfloat16 A8: bfloat16 weights that can train (a full fine-tune); weights and activations are quantized to 8 bits
+    # for each matrix multiplication, so the weight gradient is compared too
+    ref_train = torch.nn.Linear(k, n).to(ctx.device, torch.bfloat16)
+    ref_train.load_state_dict(base.state_dict())
+    xr = x.to(ctx.device, copy=True).requires_grad_()
+    ref_train(xr).backward(gd)
+    ref_dw = ref_train.weight.grad.clone()
+    for name, dtype in kinds:
+        layer = LinearA8(dtype, k, n, bias=True).to(ctx.device, torch.bfloat16)
+        layer.load_state_dict(base.state_dict())
+        layer.compute_dtype = torch.bfloat16
+        xd = x.to(ctx.device, copy=True).requires_grad_()
+        y = layer(xd)
+        y.backward(gd)
+        err_y, err_dx, err_dw = rel_err(y, ref_y), rel_err(xd.grad, ref_dx), rel_err(layer.weight.grad, ref_dw)
+        rec.expect(max(err_y, err_dx, err_dw) < 0.05 and finite(y) and finite(xd.grad) and finite(layer.weight.grad),
+                   f"bfloat16 A8 {name} vs bf16 linear: out rel err {err_y:.2e}, dx {err_dx:.2e}, dW {err_dw:.2e} "
+                   f"(limit 5e-2)")
+        t = ctx.bench(lambda layer=layer, xd=xd: layer(xd).backward(gd))
+        rec.metric(f"bfloat16 A8 {name} fwd+bwd ms ({m}x{k}x{n})", t)
+        rec.line(f"bfloat16 A8 {name} fwd+bwd (with the weight gradient) is {t_ref / t:.2f}x the speed of the bf16 "
+                 f"layer without it ({t:.2f} vs {t_ref:.2f} ms)")
 
 
 def _masks(b: int, l_q: int, l_k: int, dtype: torch.dtype, fully_masked_rows: bool):

@@ -10,6 +10,7 @@ import modules.util.rocm_check.env_checks  # noqa: F401 (registers the checks, i
 import modules.util.rocm_check.kernel_checks  # noqa: F401
 import modules.util.rocm_check.perf_checks  # noqa: F401
 import modules.util.rocm_check.training_checks  # noqa: F401
+import modules.util.rocm_check.workload_checks  # noqa: F401
 from modules.util.rocm_check.framework import FAIL, REGISTRY, Ctx, Report, child_main, run_checks
 
 import torch

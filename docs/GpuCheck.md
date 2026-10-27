@@ -4,11 +4,12 @@ Checks and measures what OneTrainer runs on your GPU, without a model download o
 GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA too, and partly on the CPU.
 
 ```sh
-./run-cmd.sh rocm_check            # quick mode, about 5 minutes
+./run-cmd.sh rocm_check            # quick mode, about 10 minutes (half of it the tiny-model training runs)
 ./run-cmd.sh rocm_check --full     # more dtypes, sizes and optimizers, plus TunableOp and torch.compile (30-45 min)
 ./run-cmd.sh rocm_check --list     # the checks
 ./run-cmd.sh rocm_check --only sdpa offloading     # checks whose "section / name" contains one of these
 ./run-cmd.sh rocm_check --resolutions 512 768 1024 # sizes for the speed checks (default 512 1024)
+./run-cmd.sh rocm_check --only "training run"      # the tiny-model training runs and component checks (section 5)
 ./run-cmd.sh rocm_check --only vae --vae /path/to/model   # the VAE checks with a real VAE (model folder with vae/,
                                                           # a VAE folder, or a .safetensors file holding a VAE, e.g.
                                                           # ComfyUI models/vae/ae.safetensors; read offline)
@@ -56,6 +57,19 @@ results up to the check that was running (the report names it). The exit code is
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
    and, with `--full`, offloading checks run again under each allocator), the offloading and disk-streaming
    checks and a model part move with and without dedicated MemPools (`OT_ROCM_MEM_POOLS`), and `torch.compile`.
+
+5. **Training run (tiny Chroma)**: a Chroma model with random weights and a small masked, captioned dataset, built
+   offline in a few seconds, trained through the real `scripts/train.py` with the main workload's settings (the Chroma
+   LoRA preset, masked training, EMA, ADOPT_ADV, no warmup, sampling and backups every epoch). Every run is seeded
+   (`OT_SEED`) and writes a diagnostics log ([RunDiagnostics.md](RunDiagnostics.md)). The baseline runs twice (the
+   run-to-run noise), then once per variant that changes how memory is handled: MemPools (`OT_ROCM_MEM_POOLS`, with
+   and without layer offloading), disk streaming off, layer and activation offloading, and resuming from a backup
+   (stopped after two of the three epochs); `--full` adds cache in RAM off, simplex offloading, synchronous
+   offloading and deterministic algorithms. Each variant's saved LoRA and losses are compared with the baseline's,
+   against the noise; it also reports each run's peak and unused memory, allocation retries and part moves. And the
+   model's components on the GPU against the CPU, with the same inputs: the text encoder (captions of two lengths, so
+   the attention is masked), the VAE both ways, and the transformer with a LoRA forward and backward, in fp32 and in
+   bf16 under autocast.
 
 ## Reading the results
 

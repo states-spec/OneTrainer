@@ -72,5 +72,9 @@ def run_ab(config_path: str, variants: list[Variant], repeats: int, out_dir: str
             with open(os.path.join(run_dir, "output.log"), "w") as out:
                 result = subprocess.run(cmd, cwd=root, env=env, stdout=out, stderr=subprocess.STDOUT)
             print(f"    exit code {result.returncode} after {time.perf_counter() - start:.0f} s, log {log}", flush=True)
+            if result.returncode != 0:
+                with open(os.path.join(run_dir, "output.log"), errors="replace") as f:
+                    tail = [line.rstrip() for line in f if line.strip()][-8:]
+                print("    the run failed, the end of its output.log:\n      " + "\n      ".join(tail), flush=True)
             logs.append(log)
     return logs

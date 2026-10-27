@@ -152,7 +152,25 @@ def training_runs(ctx: Ctx, rec: Rec):
                 log_name: str = "diag") -> dict:
             run_dir = run_dir or os.path.join(base_dir, name.replace(" ", "_").replace("+", "and"))
             os.makedirs(run_dir, exist_ok=True)
-            return _train(ctx, run_dir, _base_config(ctx, model, data, run_dir, epochs), env, values, log_name)
+            config = _base_config(ctx, model, data, run_dir, epochs)
+            config["lora_model_name"] = initial_lora
+            return _train(ctx, run_dir, config, env, values, log_name)
+
+        # every run starts from the same LoRA: a LoRA layer is initialized on the device its base layer is on, so with
+        # layer offloading the offloaded layers draw from the CPU's generator instead of the GPU's, and the runs would
+        # start apart even with OT_SEED. A run at learning rate 0 saves the start (one epoch, no samples or backups).
+        initial_lora = ""
+        init_dir = os.path.join(base_dir, "initial_lora")
+        os.makedirs(init_dir, exist_ok=True)
+        init = _train(ctx, init_dir, _base_config(ctx, model, data, init_dir, 1), {},
+                      ["learning_rate=0", "sample_after_unit=NEVER", "backup_after_unit=NEVER",
+                       "backup_before_save=false"], "diag")
+        if init["rc"] != 0 or not os.path.exists(init["output"]):
+            failed = True
+            rec.fail(f"the run that makes the initial LoRA failed (exit code {init['rc']}): "
+                     + " | ".join(init["tail"])[-600:])
+            return
+        initial_lora = init["output"]
 
         results = {"baseline": run("baseline", {}, [])}
         for name, env, values in _variants(ctx):

@@ -88,6 +88,10 @@ variant (default 2), `--out-dir` the folder, `--preset-path` a built-in preset a
   streaming, offloading) should leave the losses and weights within that noise. On the CPU, and on a GPU with
   deterministic kernels, the same seed gives bit-identical runs, and so should such a setting. GPU kernels that sum in
   a varying order make every run a little different; `OT_DETERMINISTIC=true` on both variants removes most of that.
+- **Offloading variants need a fixed start.** A new LoRA layer is initialized on the device its base layer is on, so
+  with layer offloading the offloaded layers draw from the CPU's random generator instead of the GPU's, and the runs
+  start from different LoRAs even with `OT_SEED`. To compare offloading settings, save a starting LoRA first (one run
+  with `learning_rate=0`) and give every variant `config:lora_model_name=<that file>`, as `rocm_check` does.
 - **Memory.** The peak reserved memory decides whether a run fits. "Held unused" is memory PyTorch keeps without
   tensors: it can't hold a model part that needs one large piece when it is fragmented ("frag" near 1). Allocation
   retries mean the allocator ran out and had to free its cache, usually just before an out-of-memory error, or

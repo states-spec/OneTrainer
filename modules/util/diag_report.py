@@ -74,7 +74,8 @@ def summarize(run: Run) -> dict[str, Any]:
     full = run.of("phase") + run.of("move") + run.of("error")
     errors = run.of("error")
     gpu = any("reserved" in r for r in run.records)
-    status = (f"error: {errors[-1]['type']}" + (" (out of memory)" if errors[-1].get("out_of_memory") else "")) \
+    status = (f"error: {errors[-1]['type']}" + (" (out of memory)" if errors[-1].get("out_of_memory") else "")
+              + f": {errors[-1].get('message', '')[:300]}") \
         if errors else ("finished" if run.of("end") or run.of("output") else "incomplete (crash, hang or killed?)")
     # the first two steps compile kernels and fill caches; steps with sampling/backups/part moves in between aren't
     # a step time

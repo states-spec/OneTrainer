@@ -1,6 +1,7 @@
 """Runs one training config under several variants (environment variables and/or config values), each run with its own
 workspace, cache and output folder and its own OT_DIAG_LOG, in alternating order, then compares them (diag_report).
 The default variants are the MemPool A/B on ROCm: baseline, and OT_ROCM_MEM_POOLS=true."""
+import json
 import os
 import shlex
 import subprocess
@@ -36,14 +37,45 @@ def parse_variant(spec: str) -> Variant:
 
 DEFAULT_VARIANTS = ["baseline", "mempools env:OT_ROCM_MEM_POOLS=true"]
 
+# (config key, the key holding the same list inline, TrainConfig's default file)
+_REFERENCED_FILES = [("concept_file_name", "concepts", "training_concepts/concepts.json"),
+                     ("sample_definition_file_name", "samples", "training_samples/samples.json")]
+
+
+def missing_referenced_files(config_path: str, variants: list[Variant], config_values: list[str] | None,
+                             root: str) -> list[str]:
+    """the concepts/samples files the runs would read but that don't exist. Every run copies the config into its
+    workspace with these lists inlined (GenericTrainer.__save_config_to_workspace), and fails there without them"""
+    with open(config_path) as f:
+        config = json.load(f)
+    problems = []
+    for key, inline_key, default in _REFERENCED_FILES:
+        if config.get(inline_key) is not None:
+            continue
+        for variant in variants:
+            path = config.get(key, default)
+            for value in [*(config_values or []), *variant.config_values]:
+                name, _, assigned = value.partition("=")
+                if name == key:
+                    path = assigned
+            if not os.path.isfile(os.path.join(root, path)):
+                problem = f"{key} is {path!r}" + ("" if key in config else " (not in the config: the default)") \
+                          + f", which doesn't exist (relative paths start at {root})"
+                if problem not in problems:
+                    problems.append(problem)
+    return problems
+
 
 def run_ab(config_path: str, variants: list[Variant], repeats: int, out_dir: str, preset_path: str | None = None,
            config_values: list[str] | None = None, python: str = sys.executable) -> list[str]:
     """returns the diagnostics logs, in run order: variant 1, 2, ..., 1, 2, ... (alternating spreads drift over the
     variants: GPU temperature and clocks, page cache, other load)"""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if preset_path is None and (problems := missing_referenced_files(config_path, variants, config_values, root)):
+        raise FileNotFoundError("every run would fail before training: " + "; ".join(problems)
+                                + ". Point the config (or --config-value) at the files you train with")
     os.makedirs(out_dir, exist_ok=True)
     logs = []
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     for repeat in range(1, repeats + 1):
         for variant in variants:
             run_dir = os.path.abspath(os.path.join(out_dir, f"{variant.name}-{repeat}"))

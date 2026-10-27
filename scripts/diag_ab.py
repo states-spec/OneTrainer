@@ -28,6 +28,10 @@ def main():
     parser.add_argument("--no-weights", action="store_true", help="don't compare differing saved models tensor by tensor")
     args = parser.parse_args()
 
+    for name, path in (("--config-path", args.config_path), ("--preset-path", args.preset_path)):
+        if path and not os.path.isfile(path):
+            parser.error(f"{name}: no file {os.path.abspath(path)} (configs saved from the UI's presets dropdown are "
+                         f"in training_presets/, the UI's Save config dialog starts in training_configs/)")
     variants = [parse_variant(v) for v in (args.variants or DEFAULT_VARIANTS)]
     if len({v.name for v in variants}) != len(variants):
         parser.error("variant names must differ")

@@ -200,7 +200,9 @@ def w8a8_layers(ctx: Ctx, rec: Rec):
     ref_train.load_state_dict(base.state_dict())
     xr = x.to(ctx.device, copy=True).requires_grad_()
     ref_train(xr).backward(gd)
-    ref_dw = ref_train.weight.grad.clone()
+    ref_dw = ref_train.weight.grad.clone()  # before timing, which adds to the gradients
+    t_ref_train = ctx.bench(lambda: ref_train(xr).backward(gd))
+    rec.metric(f"bf16 trainable linear fwd+bwd ms ({m}x{k}x{n})", t_ref_train)
     for name, dtype in kinds:
         layer = LinearA8(dtype, k, n, bias=True).to(ctx.device, torch.bfloat16)
         layer.load_state_dict(base.state_dict())
@@ -214,8 +216,8 @@ def w8a8_layers(ctx: Ctx, rec: Rec):
                    f"(limit 5e-2)")
         t = ctx.bench(lambda layer=layer, xd=xd: layer(xd).backward(gd))
         rec.metric(f"bfloat16 A8 {name} fwd+bwd ms ({m}x{k}x{n})", t)
-        rec.line(f"bfloat16 A8 {name} fwd+bwd (with the weight gradient) is {t_ref / t:.2f}x the speed of the bf16 "
-                 f"layer without it ({t:.2f} vs {t_ref:.2f} ms)")
+        rec.line(f"bfloat16 A8 {name} fwd+bwd is {t_ref_train / t:.2f}x the speed of a trainable bf16 layer "
+                 f"({t:.2f} vs {t_ref_train:.2f} ms, both with the weight gradient)")
 
 
 def _masks(b: int, l_q: int, l_k: int, dtype: torch.dtype, fully_masked_rows: bool):

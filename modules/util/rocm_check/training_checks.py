@@ -319,6 +319,154 @@ def offloading(ctx: Ctx, rec: Rec):
         del model, ref, conductor
 
 
+class _StreamToy(nn.Module):
+    """a frozen part with a remainder outside the layer list (input projection, final norm), as transformers have;
+    the adapters live outside it, like a LoRA"""
+
+    def __init__(self, dim, expansion, adapters):
+        super().__init__()
+        self.proj_in = nn.Linear(dim, dim)
+        self.blocks = nn.ModuleList([_Block(dim, expansion, a) for a in adapters])
+        self.norm_out = nn.LayerNorm(dim)
+
+    def forward(self, x, temb):
+        x = self.proj_in(x)
+        for b in self.blocks:
+            x = b(x, temb)
+        # the blocks return fp32 (the adapters are fp32); the norm runs in its weight dtype, as in a bf16 model
+        return self.norm_out(x.to(self.norm_out.weight.dtype))
+
+
+@check(SECTION, "disk streaming (stream_from_disk): streamed vs loaded into RAM, with and without offloading",
+       gpu_only=True, note="streams a part from a .safetensors file the way the model loaders do")
+def disk_streaming(ctx: Ctx, rec: Rec):
+    """a part streamed from its checkpoint (stream_from_disk, the default) must end up with the same weights and give the
+    same results as the part loaded into RAM, converted and moved to the GPU (stream_from_disk off): whole, and layer by
+    layer under offloading (simplex too), with cache in RAM on (evicted to RAM) and off (evicted to meta, re-streamed)"""
+    import tempfile
+
+    from modules.modelLoader.mixin.HFModelLoaderMixin import HFModelLoaderMixin, _stamp_skeleton_float_dtypes
+    from modules.util.checkpointing_util import enable_checkpointing
+    from modules.util.config.TrainConfig import TrainConfig, TrainModelPartConfig
+    from modules.util.disk_stream import stream_module_to
+    from modules.util.enum.DataType import DataType
+    from modules.util.quantization_util import quantize_layers, replace_linear_with_quantized_layers
+    from modules.util.torch_util import torch_gc
+
+    from accelerate import init_empty_weights
+    from safetensors.torch import load_file, save_file
+
+    # the loaders' own streaming closure and RAM-load conversion (private; neither uses the loader instance)
+    finish_load = HFModelLoaderMixin._HFModelLoaderMixin__finish_sub_module_load
+    convert_to_dtype = HFModelLoaderMixin._HFModelLoaderMixin__convert_sub_module_to_dtype
+
+    dim, layers, expansion = (1024, 12, 4) if ctx.full else (512, 8, 4)
+    train_dtype = DataType.BFLOAT_16
+    # "cpu:1" on a CPU-only dry run, as in the offloading check (this check needs a GPU: streaming materializes only
+    # onto a device of another type than the temp device, like TrainConfig.streams_from_disk)
+    temp = torch.device("cpu:1" if ctx.device.type == "cpu" else "cpu")
+    # (weight dtype, cache in RAM, offload fraction, simplex)
+    variants = [(d, c, 0.0, False) for d in (DataType.BFLOAT_16, DataType.FLOAT_8) for c in (True, False)] \
+        + [(d, c, 0.5, s) for d in (DataType.BFLOAT_16, DataType.FLOAT_8) for c in (True, False) for s in (False, True)]
+    if not ctx.full:
+        variants = [(DataType.BFLOAT_16, True, 0.0, False), (DataType.BFLOAT_16, False, 0.0, False),
+                    (DataType.FLOAT_8, False, 0.0, False), (DataType.BFLOAT_16, True, 0.5, False),
+                    (DataType.BFLOAT_16, False, 0.5, False), (DataType.BFLOAT_16, True, 0.5, True),
+                    (DataType.FLOAT_8, False, 0.5, False)]
+
+    def new_adapters():
+        return [nn.Parameter(_rand(ctx, dim, scale=0.1, seed=50 + i).to(ctx.device)) for i in range(layers)]
+
+    def run(model, adapters, step):
+        for p in adapters:
+            p.grad = None
+        x = _rand(ctx, 2, [256, 1024, 64, 512][step % 4], dim, seed=step).to(ctx.device)
+        temb = _rand(ctx, dim, seed=100 + step).to(ctx.device)
+        with torch.autocast(ctx.device.type, dtype=train_dtype.torch_dtype()):
+            loss = model(x, temb).float().pow(2).mean()
+        loss.backward()
+        return loss.detach(), [p.grad.clone() for p in adapters]
+
+    with tempfile.TemporaryDirectory(dir=ctx.out_dir if os.path.isdir(ctx.out_dir) else None) as tmp:
+        path = os.path.join(tmp, "part.safetensors")
+        torch.manual_seed(0)
+        save_file({k: v.contiguous() for k, v in _StreamToy(dim, expansion, new_adapters()).state_dict().items()}, path)
+
+        for dtype, cache_in_ram, fraction, simplex in variants:
+            label = (f"{dtype}, cache in RAM {'on' if cache_in_ram else 'off'}, "
+                     + (f"offload {fraction}{' simplex' if simplex else ''}" if fraction else "whole part"))
+            # stream_from_disk off: the whole file into RAM, converted, quantized, moved to the GPU
+            ref_adapters = new_adapters()
+            ref = _StreamToy(dim, expansion, ref_adapters)
+            ref.load_state_dict(load_file(path))
+            convert_to_dtype(None, ref, dtype, train_dtype, [], None)
+            ref.requires_grad_(False)
+            quantize_layers(ref, ctx.device, train_dtype, None)
+            ref.to(ctx.device)
+            expected = ref.state_dict()  # with the fp8 scale buffers
+
+            # stream_from_disk on: a meta skeleton, filled from the file on the GPU (quantized there)
+            adapters = new_adapters()
+            with init_empty_weights():
+                part = _StreamToy(dim, expansion, adapters)
+            replace_linear_with_quantized_layers(part, dtype, [], None, copy_parameters=False)
+            _stamp_skeleton_float_dtypes(part, dtype, None, [], DataType.BFLOAT_16)
+            key_to_file = dict.fromkeys(load_file(path), path)
+            part, materialize_fn = finish_load(None, part, dtype, train_dtype, [], key_to_file)
+            part.requires_grad_(False)  # after the quantized layers replaced the linears, as the model setup does
+
+            conductor = None
+            if fraction:
+                config = TrainConfig.default_values()
+                config.train_device, config.temp_device = str(ctx.device), str(temp)
+                config.async_offloading, config.stream_from_disk = True, True
+                part_config = TrainModelPartConfig.default_values()
+                part_config.offload_fraction, part_config.gradient_checkpointing = fraction, True
+                part_config.cache_in_ram, part_config.simplex_offloading = cache_in_ram, simplex
+                conductor = enable_checkpointing(part, config, part_config, False, [(part.blocks, ["hidden_states"])])
+
+            def materialize(part=part, conductor=conductor, materialize_fn=materialize_fn, cache_in_ram=cache_in_ram):
+                # as BaseModel._move_part does
+                if conductor is not None:
+                    conductor.materialize(train_dtype, name="test part", materialize_fn=materialize_fn,
+                                         cache_in_ram=cache_in_ram)
+                else:
+                    stream_module_to(part, ctx.device, materialize_fn, train_dtype, cache_in_ram, "test part", temp)
+
+            def evict(part=part, conductor=conductor, materialize_fn=materialize_fn, cache_in_ram=cache_in_ram):
+                if conductor is not None:
+                    conductor.evict(to_meta=not cache_in_ram)
+                else:
+                    stream_module_to(part, temp, materialize_fn, train_dtype, cache_in_ram, "test part", temp)
+
+            materialize()
+            if conductor is None:
+                got = part.state_dict()
+                same = got.keys() == expected.keys() and all(
+                    v.device == expected[k].device and v.dtype == expected[k].dtype and torch.equal(v, expected[k])
+                    for k, v in got.items())
+                rec.expect(same, f"{label}: streamed weights bit-identical to the RAM-loaded part, same device and dtype")
+            worst, evicted_right = 0.0, True
+            for cycle in range(3):
+                for step in range(2):
+                    loss, grads = run(part, adapters, step)
+                    ref_loss, ref_grads = run(ref, ref_adapters, step)
+                    worst = max(worst, rel_err(loss, ref_loss),
+                                *(rel_err(a, b) for a, b in zip(grads, ref_grads, strict=True)))
+                if cycle < 2:
+                    evict()
+                    # cache in RAM keeps the weights on the temp device; without it they go back to meta
+                    if conductor is None:
+                        evicted_right &= any(p.is_meta for p in part.parameters()) != cache_in_ram
+                    materialize()
+            if conductor is None:
+                rec.expect(evicted_right, f"{label}: evicted to {'RAM' if cache_in_ram else 'meta'} and streamed back")
+            rec.expect(worst < 1e-5, f"{label}: loss/grads vs the RAM-loaded part over 3 load cycles, rel err {worst:.1e}")
+            evict()
+            del ref, part, conductor, materialize_fn
+            torch_gc()
+
+
 @check(SECTION, "pinned host memory and transfer speed", gpu_only=True)
 def pinned_memory(ctx: Ctx, rec: Rec):
     from modules.util.torch_util import pin_tensor_, unpin_tensor_

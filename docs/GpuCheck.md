@@ -20,13 +20,14 @@ results up to the check that was running (the report names it). The exit code is
 
 ## What it checks
 
-1. **Environment**: PyTorch and its ROCm/CUDA build, the GPU (name, gfx arch, VRAM), the BLAS and flash attention
+1. **Environment**: PyTorch and its ROCm/CUDA build, the GPU (name, gfx arch, VRAM; every visible GPU, so an integrated one shows up), the BLAS and flash attention
    libraries, Triton, bitsandbytes, package versions and the GPU environment variables. It warns when AOTriton
    treats the GPU as experimental (then SDPA silently uses its slow math kernel), and reports whether the float W8A8
    weight types can run.
 2. **Kernel correctness**, each against a float64 reference on the CPU:
    - matmul/linear forward and backward in fp32/bf16/fp16 (hipBLASLt or cuBLAS)
-   - int8 matmul (`torch._int_mm`) and OneTrainer's Triton 8-bit kernel (the W8A8 backward), W8A8 layers
+   - int8 matmul (`torch._int_mm`) and OneTrainer's Triton 8-bit kernel (the W8A8 backward), W8A8 layers, and the
+     bfloat16 A8 layers (timed against a bf16 layer that also computes the weight gradient)
    - scaled dot product attention per backend (flash, memory-efficient and math, PyTorch's kernels called directly)
      and the call OneTrainer makes, per head size used by the model families and the VAEs (up to 512), with no mask, key-padding masks and the query x key mask whose padded rows
      have no valid key (NaN there would spread through the model)
@@ -40,6 +41,10 @@ results up to the check that was running (the report names it). The exit code is
      schedule-free ones), with a save/resume round trip like a backup
    - layer and activation offloading through the real `LayerOffloadConductor`: same loss and gradients as without
      offloading, only the loaded layers on the GPU after loading, weights bit-identical after load/unload cycles
+   - disk streaming (`stream_from_disk`, on by default): a part streamed from a `.safetensors` file through the model
+     loaders' own streaming code, against the same part loaded into RAM and moved to the GPU: the same weights
+     (bf16 and fp8), loss and gradients, whole and layer by layer under offloading (simplex too), with Cache In RAM
+     on and off, over three unload/reload cycles
    - pinned host memory and transfer speed
    - concurrent VAE encodes, as caching with `dataloader_threads` > 1 does, with and without the lock OneTrainer
      now uses (on ROCm, unlocked concurrent encodes once gave random NaN latents)
@@ -49,8 +54,8 @@ results up to the check that was running (the report names it). The exit code is
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
    runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
-   and, with `--full`, offloading checks run again under each allocator), the offloading check and a model part
-   move with and without dedicated MemPools (`OT_ROCM_MEM_POOLS`), and `torch.compile`.
+   and, with `--full`, offloading checks run again under each allocator), the offloading and disk-streaming
+   checks and a model part move with and without dedicated MemPools (`OT_ROCM_MEM_POOLS`), and `torch.compile`.
 
 ## Reading the results
 

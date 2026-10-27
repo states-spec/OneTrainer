@@ -266,8 +266,9 @@ def allocator(ctx: Ctx, rec: Rec):
 
 @child_task("mem_pool_checks")
 def mem_pool_checks(ctx: Ctx) -> dict:
-    """the offloading check (its caches go into MemPools) and a model part moved into its own MemPool and back, as
-    BaseModel._move_part does, in this process's OT_ROCM_MEM_POOLS setting, after an allocation churn"""
+    """the offloading and disk-streaming checks (their caches and streamed layers go into MemPools) and a model part
+    moved into its own MemPool and back, as BaseModel._move_part does, in this process's OT_ROCM_MEM_POOLS setting,
+    after an allocation churn"""
     import copy
 
     from modules.util.rocm_check.framework import REGISTRY
@@ -277,7 +278,7 @@ def mem_pool_checks(ctx: Ctx) -> dict:
     torch.cuda.empty_cache()
     results = {}
     for c in REGISTRY:
-        if not c.name.startswith("layer + activation offloading"):
+        if not c.name.startswith(("layer + activation offloading", "disk streaming")):
             continue
         rec = Rec()
         try:
@@ -313,7 +314,7 @@ def mem_pool_checks(ctx: Ctx) -> dict:
 
 
 @check(SECTION, "mem_pool: allocations with and without MemPools (OT_ROCM_MEM_POOLS), correctness", gpu_only=True,
-       note="runs the offloading check again with and without the MemPools offloading and part moves use")
+       note="runs the offloading and disk-streaming checks again with and without the MemPools they use")
 def mem_pools(ctx: Ctx, rec: Rec):
     rec.info()
     wrong = {}

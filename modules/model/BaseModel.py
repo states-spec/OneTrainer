@@ -1,5 +1,6 @@
 import itertools
 import os
+import time
 from abc import ABCMeta
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -16,6 +17,7 @@ from modules.util.enum.ModelType import ModelType
 from modules.util.LayerOffloadConductor import LayerOffloadConductor
 from modules.util.modelSpec.ModelSpec import ModelSpec
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
+from modules.util.run_diagnostics import diagnostics
 from modules.util.torch_util import (
     create_mem_pool,
     device_equals,
@@ -151,9 +153,10 @@ class BaseModel(metaclass=ABCMeta):
     def materialize(self, *parts: str):
         # Move `parts` onto train_device.
         part = None
+        start, moved = time.perf_counter(), False
         try:
             for part in parts:
-                self._move_part(part, self.train_device)
+                moved |= self._move_part(part, self.train_device)
         except torch.OutOfMemoryError:
             # expandable_segments gave wrong results on an RX 7900 XTX (see LAUNCH-SCRIPTS.md), so on ROCm it is only
             # named with the check that decides whether it is safe
@@ -166,6 +169,7 @@ class BaseModel(metaclass=ABCMeta):
                   f"tensors, it is fragmented: {expandable}.")
             raise
         _log_vram(self.train_device, f"after loading {', '.join(parts)}")
+        diagnostics.move("load", parts, moved, time.perf_counter() - start)
 
     def _part_weights_summary(self, part: str) -> str:
         # e.g. "transformer weights: 33.21 GiB (float32). " -- a part left at the FLOAT_32 default weight dtype is the
@@ -191,12 +195,14 @@ class BaseModel(metaclass=ABCMeta):
         # have nothing to reclaim. Each part reports whether it moved rather than the model tracking residency,
         # so the answer always comes from the component that did (or didn't) do the move.
         moved = False
+        start = time.perf_counter()
 
         for part in parts or self.model_type.model_parts():
             moved |= self._move_part(part, self.temp_device)
         if moved:
             torch_gc()
             _log_vram(self.train_device, f"after unloading {', '.join(parts) if parts else 'all parts'}")
+        diagnostics.move("unload", list(parts or self.model_type.model_parts()), moved, time.perf_counter() - start)
         if (self.train_config is not None and self.train_config.debug_mode) or os.environ.get("OT_DEBUG_PROFILES") == "1":
             print_fragmentation(f"evict({', '.join(parts) or 'all'})")
 

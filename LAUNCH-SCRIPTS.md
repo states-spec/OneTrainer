@@ -33,6 +33,12 @@
 
 - `OT_LOG_VRAM`: If set to `true`, OneTrainer prints the GPU memory use every time it loads or unloads a model part (caching, sampling, backups), to find the step that runs out of memory. Defaults to `false`.
 
+- `OT_DIAG_LOG`: If set to `true`, a training run writes a diagnostics log to `<workspace>/diagnostics/<timestamp>.jsonl` (any other value is the file to write): GPU memory, fragmentation, allocation retries and timing at every step, part load/unload, caching, sampling, validation, backup and save, and the error that ended a run. `./run-cmd.sh diag_report` summarizes and compares such logs, and `./run-cmd.sh diag_ab` runs a config under several settings (for example with and without `OT_ROCM_MEM_POOLS`) and compares them. See [docs/RunDiagnostics.md](docs/RunDiagnostics.md). Defaults to off.
+
+- `OT_SEED`: If set to a number, the random generators are seeded with it when training starts, so two runs of the same config start from the same LoRA (or embedding) initialization, which is otherwise random each run. For comparing runs; `diag_ab` sets it. Defaults to unset.
+
+- `OT_DETERMINISTIC`: If set to `true`, PyTorch is asked for deterministic GPU kernels, so two runs of the same config differ less (operations without a deterministic kernel print a warning and run as before). For comparing runs; can be slower. Defaults to `false`.
+
 - `OT_PLATFORM_REQUIREMENTS`: Allows you to override which platform-specific "requirements" file you want to install. Defaults to `detect`, which automatically detects whether you have an AMD or NVIDIA GPU. But people with multi-GPU systems can use this setting to force a specific GPU acceleration framework's requirements. Valid values are `requirements-rocm.txt` for AMD, `requirements-cuda.txt` for NVIDIA, and `requirements-default.txt` for non-AMD/NVIDIA systems.
 
 - `OT_SCRIPT_DEBUG`: If set to `true`, it enables additional debug logging in the scripts. Defaults to `false`.

@@ -34,6 +34,7 @@ from modules.util.enum.ModelType import PeftType
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.profiling_util import PeakMemoryRecorder, TorchMemoryRecorder, TorchProfiler
+from modules.util.run_diagnostics import apply_reproducibility_env, diagnostics
 from modules.util.time_util import get_string_timestamp
 from modules.util.torch_util import fp8_matmul_supported, torch_gc
 from modules.util.tqdm_util import tqdm
@@ -88,6 +89,7 @@ class GenericTrainer(BaseTrainer):
         self.one_step_trained = False
         self.grad_hook_handles = []
 
+    @diagnostics.record_errors
     def start(self):
         # checked up front: the saver only rejects an unsupported format when it first saves, after the training
         formats = self.config.model_type.supported_output_formats(self.config.training_method)
@@ -109,6 +111,9 @@ class GenericTrainer(BaseTrainer):
             raise ValueError("oft_clipped_norm must be greater than 0. Leave it empty to turn spectral norm clipping off.")
         self.__check_device_support()
         create.check_optimizer_config(self.config.optimizer)
+        diagnostics.close()  # a run in this process (the UI) that ended in an error left its log open
+        diagnostics.start(self.config, torch.device(self.config.train_device))
+        apply_reproducibility_env()
 
         if multi.is_master():
             self.__save_config_to_workspace()
@@ -169,21 +174,23 @@ class GenericTrainer(BaseTrainer):
         self.config.quantization.cache_dir = self.config.cache_dir + "/quantization"
         os.makedirs(self.config.quantization.cache_dir, exist_ok=True)
 
-        self.model = self.model_loader.load(
-            model_type=self.config.model_type,
-            model_names=model_names,
-            weight_dtypes=self.config.weight_dtypes(),
-            quantization=self.config.quantization,
-            stream_from_disk=self.config.streams_from_disk(),
-            cache_in_ram=self.config.cache_in_ram(),
-        )
+        with diagnostics.phase("load model"):
+            self.model = self.model_loader.load(
+                model_type=self.config.model_type,
+                model_names=model_names,
+                weight_dtypes=self.config.weight_dtypes(),
+                quantization=self.config.quantization,
+                stream_from_disk=self.config.streams_from_disk(),
+                cache_in_ram=self.config.cache_in_ram(),
+            )
         self.model.train_config = self.config
 
         self.callbacks.on_update_status("running model setup")
 
-        self.model_setup.setup_optimizations(self.model, self.config)
-        self.model_setup.setup_train_device(self.model, self.config)
-        self.model_setup.setup_model(self.model, self.config)
+        with diagnostics.phase("model setup"):
+            self.model_setup.setup_optimizations(self.model, self.config)
+            self.model_setup.setup_train_device(self.model, self.config)
+            self.model_setup.setup_model(self.model, self.config)
         self.model.eval()
 
         self.callbacks.on_update_status("creating the data loader/caching")
@@ -333,6 +340,7 @@ class GenericTrainer(BaseTrainer):
 
             torch_gc()
 
+    @diagnostics.phase_method("sampling")
     def __sample_during_training(
             self,
             train_progress: TrainProgress,
@@ -402,84 +410,88 @@ class GenericTrainer(BaseTrainer):
 
     def __validate(self, train_progress: TrainProgress):
         if self.__needs_validate(train_progress):
-            self.validation_data_loader.get_data_set().start_next_epoch()
-            current_epoch_length_validation = self.validation_data_loader.get_data_set().approximate_length()
+            with diagnostics.phase("validation"):
+                self.__run_validation(train_progress)
 
-            if current_epoch_length_validation == 0:
-                return
+    def __run_validation(self, train_progress: TrainProgress):
+        self.validation_data_loader.get_data_set().start_next_epoch()
+        current_epoch_length_validation = self.validation_data_loader.get_data_set().approximate_length()
 
-            self.callbacks.on_update_status("Calculating validation loss")
-            self.model_setup.setup_train_device(self.model, self.config)
-            # evaluated like samples: without dropout, and on the weights that are sampled and saved (schedule-free
-            # optimizers train on an interpolated point and switch to their averaged weights for evaluation)
-            self.model.eval()
-            self.__before_eval()
+        if current_epoch_length_validation == 0:
+            return
 
-            torch_gc()
+        self.callbacks.on_update_status("Calculating validation loss")
+        self.model_setup.setup_train_device(self.model, self.config)
+        # evaluated like samples: without dropout, and on the weights that are sampled and saved (schedule-free
+        # optimizers train on an interpolated point and switch to their averaged weights for evaluation)
+        self.model.eval()
+        self.__before_eval()
 
-            step_tqdm_validation = tqdm(
-                self.validation_data_loader.get_data_loader(),
-                desc="validation_step",
-                total=current_epoch_length_validation)
+        torch_gc()
 
-            accumulated_loss_per_concept = {}
-            concept_counts = {}
-            mapping_seed_to_label = {}
-            mapping_label_to_seed = {}
+        step_tqdm_validation = tqdm(
+            self.validation_data_loader.get_data_loader(),
+            desc="validation_step",
+            total=current_epoch_length_validation)
 
-            for validation_batch in step_tqdm_validation:
-                if self.__needs_gc(train_progress):
-                    torch_gc()
+        accumulated_loss_per_concept = {}
+        concept_counts = {}
+        mapping_seed_to_label = {}
+        mapping_label_to_seed = {}
 
-                with torch.no_grad():
-                    model_output_data = self.model_setup.predict(
-                        self.model, validation_batch, self.config, train_progress, deterministic=True)
-                    loss_validation = self.model_setup.calculate_loss(
-                        self.model, validation_batch, model_output_data, self.config)
+        for validation_batch in step_tqdm_validation:
+            if self.__needs_gc(train_progress):
+                torch_gc()
 
-                # since validation batch size = 1
-                concept_name = validation_batch["concept_name"][0]
-                concept_path = validation_batch["concept_path"][0]
-                concept_seed = validation_batch["concept_seed"].item()
-                loss = loss_validation.item()
+            with torch.no_grad():
+                model_output_data = self.model_setup.predict(
+                    self.model, validation_batch, self.config, train_progress, deterministic=True)
+                loss_validation = self.model_setup.calculate_loss(
+                    self.model, validation_batch, model_output_data, self.config)
 
-                label = concept_name if concept_name else os.path.basename(concept_path)
-                # check and fix collision to display both graphs in tensorboard
-                if label in mapping_label_to_seed and mapping_label_to_seed[label] != concept_seed:
-                    suffix = 1
+            # since validation batch size = 1
+            concept_name = validation_batch["concept_name"][0]
+            concept_path = validation_batch["concept_path"][0]
+            concept_seed = validation_batch["concept_seed"].item()
+            loss = loss_validation.item()
+
+            label = concept_name if concept_name else os.path.basename(concept_path)
+            # check and fix collision to display both graphs in tensorboard
+            if label in mapping_label_to_seed and mapping_label_to_seed[label] != concept_seed:
+                suffix = 1
+                new_label = f"{label}({suffix})"
+                while new_label in mapping_label_to_seed and mapping_label_to_seed[new_label] != concept_seed:
+                    suffix += 1
                     new_label = f"{label}({suffix})"
-                    while new_label in mapping_label_to_seed and mapping_label_to_seed[new_label] != concept_seed:
-                        suffix += 1
-                        new_label = f"{label}({suffix})"
-                    label = new_label
+                label = new_label
 
-                if concept_seed not in mapping_seed_to_label:
-                    mapping_seed_to_label[concept_seed] = label
-                    mapping_label_to_seed[label] = concept_seed
+            if concept_seed not in mapping_seed_to_label:
+                mapping_seed_to_label[concept_seed] = label
+                mapping_label_to_seed[label] = concept_seed
 
-                accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
-                concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
+            accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
+            concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
 
-            self.model_setup.setup_train_device(self.model, self.config)
-            if self.config.optimizer.optimizer.is_schedule_free:
-                torch.clear_autocast_cache()
-                self.model.optimizer.train()
+        self.model_setup.setup_train_device(self.model, self.config)
+        if self.config.optimizer.optimizer.is_schedule_free:
+            torch.clear_autocast_cache()
+            self.model.optimizer.train()
 
-            for concept_seed, total_loss in accumulated_loss_per_concept.items():
-                average_loss = total_loss / concept_counts[concept_seed]
+        for concept_seed, total_loss in accumulated_loss_per_concept.items():
+            average_loss = total_loss / concept_counts[concept_seed]
 
-                self.tensorboard.add_scalar(f"loss/validation_step/{mapping_seed_to_label[concept_seed]}",
-                                            average_loss,
-                                            train_progress.global_step)
+            self.tensorboard.add_scalar(f"loss/validation_step/{mapping_seed_to_label[concept_seed]}",
+                                        average_loss,
+                                        train_progress.global_step)
 
-            if len(concept_counts) > 1:
-                total_loss = sum(accumulated_loss_per_concept[key] for key in concept_counts)
-                total_count = sum(concept_counts[key] for key in concept_counts)
-                total_average_loss = total_loss / total_count
+        if len(concept_counts) > 1:
+            total_loss = sum(accumulated_loss_per_concept[key] for key in concept_counts)
+            total_count = sum(concept_counts[key] for key in concept_counts)
+            total_average_loss = total_loss / total_count
 
-                self.tensorboard.add_scalar("loss/validation_step/total_average",
-                                            total_average_loss,
-                                            train_progress.global_step)
+            self.tensorboard.add_scalar("loss/validation_step/total_average",
+                                        total_average_loss,
+                                        train_progress.global_step)
 
     def __save_backup_config(self, backup_path):
         config_path = os.path.join(backup_path, "onetrainer_config")
@@ -496,6 +508,7 @@ class GenericTrainer(BaseTrainer):
         if os.path.isfile(self.config.sample_definition_file_name):
             shutil.copy2(self.config.sample_definition_file_name, samples_path)
 
+    @diagnostics.phase_method("backup")
     def __backup(self, train_progress: TrainProgress, print_msg: bool = True):
         torch_gc()
 
@@ -544,6 +557,7 @@ class GenericTrainer(BaseTrainer):
 
         torch_gc()
 
+    @diagnostics.phase_method("save")
     def __save(self, train_progress: TrainProgress, print_msg: bool = True):
         torch_gc()
 
@@ -691,6 +705,7 @@ class GenericTrainer(BaseTrainer):
             torch.clear_autocast_cache()
             self.model.optimizer.eval()
 
+    @diagnostics.record_errors
     def train(self):
         train_device = torch.device(self.config.train_device)
 
@@ -700,7 +715,8 @@ class GenericTrainer(BaseTrainer):
             if multi.is_master():
                 self.callbacks.on_update_status("Caching")
                 for _epoch in tqdm(range(train_progress.epoch, self.config.epochs, 1), desc="epoch"):
-                    self.data_loader.get_data_set().start_next_epoch()
+                    with diagnostics.phase("caching", epoch=_epoch):
+                        self.data_loader.get_data_set().start_next_epoch()
             return
 
         scaler = create_grad_scaler() if enable_grad_scaling(self.config.train_dtype, self.parameters) else None
@@ -727,12 +743,13 @@ class GenericTrainer(BaseTrainer):
 
             #call start_next_epoch with only one process at first, because it might write to the cache. All subsequent processes can read in parallel:
             for _ in multi.master_first():
-                if self.config.latent_caching:
-                    self.data_loader.get_data_set().start_next_epoch()
-                    self.model_setup.setup_train_device(self.model, self.config)
-                else:
-                    self.model_setup.setup_train_device(self.model, self.config)
-                    self.data_loader.get_data_set().start_next_epoch()
+                with diagnostics.phase("epoch start (caching)", epoch=train_progress.epoch):
+                    if self.config.latent_caching:
+                        self.data_loader.get_data_set().start_next_epoch()
+                        self.model_setup.setup_train_device(self.model, self.config)
+                    else:
+                        self.model_setup.setup_train_device(self.model, self.config)
+                        self.data_loader.get_data_set().start_next_epoch()
 
             if self.config.debug_mode:
                 multi.warn_parameter_divergence(self.parameters, train_device)
@@ -918,6 +935,7 @@ class GenericTrainer(BaseTrainer):
                             )
 
                         self.one_step_trained = True
+                        diagnostics.step(train_progress.global_step, train_progress.epoch, accumulated_loss_cpu)
 
                 if self.config.validation and multi.is_master():
                     self.__validate(train_progress)
@@ -972,13 +990,15 @@ class GenericTrainer(BaseTrainer):
                 )
                 print("Saving " + save_path)
 
-                self.model_saver.save(
-                    model=self.model,
-                    model_type=self.config.model_type,
-                    output_model_format=self.config.output_model_format,
-                    output_model_destination=save_path,
-                    dtype=self.config.output_dtype.torch_dtype()
-                )
+                with diagnostics.phase("final save", path=save_path):
+                    self.model_saver.save(
+                        model=self.model,
+                        model_type=self.config.model_type,
+                        output_model_format=self.config.output_model_format,
+                        output_model_destination=save_path,
+                        dtype=self.config.output_dtype.torch_dtype()
+                    )
+                diagnostics.output(save_path)
 
         if self.model is not None:
             self.model.evict()
@@ -991,3 +1011,4 @@ class GenericTrainer(BaseTrainer):
 
         for handle in self.grad_hook_handles:
             handle.remove()
+        diagnostics.close()

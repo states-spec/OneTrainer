@@ -114,13 +114,18 @@ def summarize(run: Run) -> dict[str, Any]:
     phases: dict[str, dict[str, float]] = {}
     for p in run.of("phase"):
         entry = phases.setdefault(p["name"], {"count": 0, "seconds": 0.0, "peak reserved GiB": None,
-                                             "held unused max GiB": None})
+                                             "reserved added GiB": None, "held unused max GiB": None})
         entry["count"] += 1
         entry["seconds"] += p["seconds"]
         if "peak_reserved" in p:
             entry["peak reserved GiB"] = max(entry["peak reserved GiB"] or 0.0, p["peak_reserved"] / GIB)
             entry["held unused max GiB"] = max(entry["held unused max GiB"] or 0.0,
                                                (p["reserved"] - p["allocated"]) / GIB)
+            # the peak counts what was reserved before the phase too (the cache training left), so also how far
+            # the phase itself grew it
+            if (p.get("before") or {}).get("reserved") is not None:
+                entry["reserved added GiB"] = max(entry["reserved added GiB"] or 0.0,
+                                                  (p["peak_reserved"] - p["before"]["reserved"]) / GIB)
     out["phases"] = phases
     outputs = run.of("output")
     out["output"] = outputs[-1] if outputs else None
@@ -234,14 +239,17 @@ def report(paths: list[str], compare_weights: bool = True) -> tuple[str, dict]:
     phase_names = sorted({n for s in summaries for n in s["phases"]})
     if phase_names:
         lines.append("")
-        lines.append("phases (count, total s, peak reserved GiB, most held unused after it GiB):")
+        lines.append("phases (count, total s, peak reserved GiB (+ the most the phase added to what was reserved "
+                     "before it), most held unused after it GiB):")
         rows = [["phase", *labels]]
         for n in phase_names:
             cells = []
             for s in summaries:
                 p = s["phases"].get(n)
                 cells.append("-" if p is None else f"{p['count']}x {p['seconds']:.1f}s "
-                             f"{_fmt(p['peak reserved GiB'])} {_fmt(p['held unused max GiB'])}")
+                             f"{_fmt(p['peak reserved GiB'])}"
+                             + ("" if p["reserved added GiB"] is None else f" (+{_fmt(p['reserved added GiB'])})")
+                             + f" {_fmt(p['held unused max GiB'])}")
             rows.append([n, *cells])
         lines.append(_table(rows))
 

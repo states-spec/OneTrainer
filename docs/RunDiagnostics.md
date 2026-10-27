@@ -52,7 +52,9 @@ The first log is the reference. The report shows:
   backups or part moves in between, don't count), peak RAM, and on a GPU: peak allocated and reserved memory, the
   most memory held without tensors, fragmentation, inactive split memory, MemPool memory, allocation retries, OOMs,
   GPU allocations and releases, part moves and their time;
-- per phase: how often, how long, its peak reserved memory and the most memory held unused after it;
+- per phase: how often, how long, its peak reserved memory, in brackets how much the phase itself added to what
+  was reserved before it (the peak also counts the cache training left behind), and the most memory held unused
+  after it;
 - for each run against the first: where the losses part, and whether the saved weights are bit-identical (if not,
   the largest relative difference of a tensor, read from the saved files);
 - for repeated runs of the same variant: the same comparison among them, which is the run-to-run noise to judge the

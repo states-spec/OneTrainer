@@ -186,6 +186,10 @@ def runtime_switches(ctx: Ctx, rec: Rec):
                 parts.append(f"{key.removesuffix(' ms')} {value:.2f} ms" + ("" if name == "default" else f" ({ratio:.2f}x)"))
                 rec.metric(f"{name}: {key}", value)
         rec.line(f"{name} (BLAS {result.get('blas', '?')}, total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
+        if "BLAS" in name and result.get("blas") and result.get("blas") == base.get("blas"):
+            # PyTorch keeps its default where it doesn't allow the other library (hipBLASLt on gfx1100 in torch 2.13)
+            rec.line(f"{name}: PyTorch ignored the setting on this GPU and still used {result['blas']}, so the "
+                     f"numbers above are the default library again (run-to-run spread)")
         errors = {k: v for k, v in result.items() if k.endswith(" err")}
         if errors:
             worst = max(errors, key=errors.get)

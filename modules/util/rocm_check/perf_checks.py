@@ -2,6 +2,7 @@
 switches (BLAS library, TunableOp, MIOpen find mode, allocator settings, torch.compile) change. Numbers only: a slow
 result is reported, not failed, except where a setting breaks.
 """
+import glob
 import os
 import time
 
@@ -158,8 +159,12 @@ def runtime_switches(ctx: Ctx, rec: Rec):
         else:
             variants["hipBLASLt instead of rocBLAS (TORCH_BLAS_PREFER_HIPBLASLT=1)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "1"}
         variants["MIOPEN_FIND_MODE=FAST"] = {"MIOPEN_FIND_MODE": "FAST"}
+    tuned_before = []
     if ctx.full:
-        variants["TunableOp (PYTORCH_TUNABLEOP_ENABLED=1, tuned in this run)"] = {
+        # TunableOp reads the results file an earlier rocm_check run left in the output folder and tunes only the
+        # shapes it doesn't hold, so its timing includes a tuning only when there was no such file
+        tuned_before = sorted(os.path.basename(f) for f in glob.glob(os.path.join(ctx.out_dir, "rocm_check_tunableop*.csv")))
+        variants["TunableOp (PYTORCH_TUNABLEOP_ENABLED=1)"] = {
             "PYTORCH_TUNABLEOP_ENABLED": "1", "PYTORCH_TUNABLEOP_TUNING": "1",
             "PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS": "100",
             "PYTORCH_TUNABLEOP_FILENAME": os.path.join(ctx.out_dir, "rocm_check_tunableop%d.csv"),
@@ -206,8 +211,13 @@ def runtime_switches(ctx: Ctx, rec: Rec):
             # bf16 inputs: the same limit as the BLAS correctness check
             rec.expect(errors[worst] < 2e-2, f"{name}: linear forward/backward vs fp64, worst rel err "
                                              f"{errors[worst]:.2e} ({worst.removesuffix(' err')}, limit 2e-02)")
-    rec.line("(x = speed relative to default; >1 is faster. TunableOp's first run includes tuning; its results are "
-             "saved in rocm_check_tunableop*.csv)")
+    if ctx.full:
+        rec.line(f"TunableOp used the results an earlier run saved in {', '.join(tuned_before)} (delete it to time a "
+                 f"new tuning)" if tuned_before else
+                 "TunableOp tuned in this run (its total includes the tuning); the results are saved in "
+                 "rocm_check_tunableop0.csv and used by the next run")
+    rec.line("(x = speed relative to default; >1 is faster. The default run's times vary between runs, e.g. 0.68 vs "
+             "1.17 ms for the same 4096x640x5120 kernel in two runs on an RX 7900 XTX: compare ratios within a run)")
 
 
 @child_task("alloc_pattern")

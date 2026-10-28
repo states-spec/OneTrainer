@@ -23,6 +23,7 @@ try:
 except ImportError:
     sys.path.append(str(Path(__file__).parent.parent))
     from modules.util.config.TrainConfig import TrainConfig
+from modules.util import path_util
 
 import psutil
 import requests
@@ -94,7 +95,7 @@ def create_debug_package(output_zip_path: str, config_json_string: str):
                 check=False,
             )
 
-            report_src = repo_root / "debug_report.log"
+            report_src = Path(path_util.diagnostics_path("debug_report.log"))
             report_path = tmp / "debug_report.log"
             if report_src.exists():
                 shutil.move(str(report_src), report_path)
@@ -1113,7 +1114,8 @@ def main() -> None:
 
     try:
         report = ReportBuilder.build_report()
-        output_file = Path("debug_report.log")
+        output_file = Path(path_util.diagnostics_path("debug_report.log"))
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         ReportBuilder.write_report(report, output_file)
         print(
             f"Debug report created successfully: {output_file.absolute()}"

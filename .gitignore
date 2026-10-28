@@ -39,13 +39,8 @@ pixi.toml
 /src
 train.bat
 debug_report.log
-rocm_check_report.txt
-rocm_check_report.json
-rocm_check_tunableop*.csv
-rocm_check_miopen_db/
-/diag_ab/
 config_diff.txt
 CLAUDE.md
 
-# PyTorch TunableOp results (PYTORCH_TUNABLEOP_ENABLED=1), written to the folder training runs from
-/tunableop_results*.csv
+# output of the diagnostic tools: rocm_check, diag_ab, OT_DIAG_LOG, TunableOp results, debug report, stack dumps
+/diagnostics/

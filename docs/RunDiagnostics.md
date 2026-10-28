@@ -10,6 +10,21 @@ fragmented that memory gets, how fast the steps are, and whether the results cha
 The GPU check (`./run-cmd.sh rocm_check`, see [GpuCheck.md](GpuCheck.md)) does the same with a tiny model, in a few
 minutes and without your model or dataset. Use it first; use these tools for the real thing.
 
+## Where the output goes
+
+Everything these tools write goes into one folder, `diagnostics/` in the OneTrainer folder (git ignores it):
+
+| folder or file | written by |
+|---|---|
+| `rocm_check/` | `rocm_check`: `rocm_check_report.txt` and `.json`, its TunableOp results and MIOpen database, and the tiny-Chroma training runs when that check fails (`--out-dir` changes it) |
+| `diag_ab/<timestamp>/` | `diag_ab`: one folder per run (workspace, cache, output, `diag.jsonl`, `output.log`) and `report.txt` (`--out-dir` changes it) |
+| `runs/<timestamp>.jsonl` | a training run with `OT_DIAG_LOG=true` |
+| `tunableop/tunableop_results0.csv` | PyTorch's TunableOp (`PYTORCH_TUNABLEOP_ENABLED=1`), unless `PYTORCH_TUNABLEOP_FILENAME` is set; deleting it only costs a new tuning |
+| `debug_report.log` | `generate_debug_report` |
+| `stacks.txt` | the profiling window's stack dump |
+
+Everything in it can be deleted; only the TunableOp results are read again, by later runs.
+
 ## The diagnostics log
 
 ```sh
@@ -17,7 +32,7 @@ OT_DIAG_LOG=true ./start-ui.sh                                   # or the CLI:
 OT_DIAG_LOG=/path/run.jsonl ./run-cmd.sh train --config-path my_config.json
 ```
 
-`true` writes `<workspace>/diagnostics/<timestamp>.jsonl`; any other value is the file to write. Each line is one
+`true` writes `diagnostics/runs/<timestamp>.jsonl` in the OneTrainer folder; any other value is the file to write. Each line is one
 record, written at once, so a crash or a GPU hang still leaves everything before it:
 
 | record | when | what |
@@ -69,7 +84,7 @@ The first log is the reference. The report shows:
 
 Without `--variant` this is the MemPool comparison: `baseline` against `OT_ROCM_MEM_POOLS=true`, twice each, in the
 order baseline, MemPools, baseline, MemPools (alternating spreads drift, such as GPU temperature, over both). Each run
-gets its own workspace, cache and output folder under `diag_ab/<timestamp>/`, so every run loads, caches and trains
+gets its own workspace, cache and output folder under `diagnostics/diag_ab/<timestamp>/`, so every run loads, caches and trains
 the same way, and `OT_SEED=42` (unless you set another), so every run starts from the same LoRA. At the end it prints
 the report and writes it to `report.txt` in that folder.
 

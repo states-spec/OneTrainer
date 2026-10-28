@@ -125,7 +125,7 @@ If you encounter a reproducible error you first must run update.bat or update.sh
 -   On Windows double click `export_debug.bat`
 -   On Unix-based systems execute `./run-cmd.sh generate_debug_report`
 
-These will both create a `debug_report.log`.
+These will both create `diagnostics/debug_report.log`.
 
 > [!WARNING]
 > We require this file for GitHub issues going forward. Failure to provide it or not manually providing the necessary info will lead to the issue being closed in most circumstances

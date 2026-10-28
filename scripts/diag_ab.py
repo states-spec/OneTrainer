@@ -5,6 +5,7 @@ script_imports()
 import argparse
 import os
 
+from modules.util import path_util
 from modules.util.diag_ab import DEFAULT_VARIANTS, parse_variant, run_ab
 from modules.util.diag_report import report
 from modules.util.time_util import get_string_timestamp
@@ -24,7 +25,7 @@ def main():
                              " or 'nostream config:stream_from_disk=false'. Can be passed multiple times")
     parser.add_argument("--repeats", type=int, default=2,
                         help="runs per variant (default 2: a repeat shows the run-to-run noise)")
-    parser.add_argument("--out-dir", help="where the runs go (default diag_ab/<timestamp>)")
+    parser.add_argument("--out-dir", help="where the runs go (default diagnostics/diag_ab/<timestamp>)")
     parser.add_argument("--no-weights", action="store_true", help="don't compare differing saved models tensor by tensor")
     args = parser.parse_args()
 
@@ -35,10 +36,13 @@ def main():
     variants = [parse_variant(v) for v in (args.variants or DEFAULT_VARIANTS)]
     if len({v.name for v in variants}) != len(variants):
         parser.error("variant names must differ")
-    out_dir = args.out_dir or os.path.join("diag_ab", get_string_timestamp())
+    out_dir = args.out_dir or path_util.diagnostics_path("diag_ab", get_string_timestamp())
     logs = run_ab(os.path.abspath(args.config_path), variants, args.repeats, out_dir,
                   os.path.abspath(args.preset_path) if args.preset_path else None, args.config_values)
-    text, _ = report([log for log in logs if os.path.exists(log)], compare_weights=not args.no_weights)
+    logs = [log for log in logs if os.path.exists(log)]
+    if not logs:
+        raise SystemExit("\nno run got far enough to write a diagnostics log; the end of each run's output.log is above")
+    text, _ = report(logs, compare_weights=not args.no_weights)
     print()
     print(text)
     with open(os.path.join(out_dir, "report.txt"), "w") as f:

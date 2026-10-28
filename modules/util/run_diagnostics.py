@@ -1,7 +1,7 @@
 """OT_DIAG_LOG: a JSON-lines record of one training run (GPU memory, fragmentation, timing, loss), for comparing runs with
 scripts/diag_report.py, e.g. the same config with and without OT_ROCM_MEM_POOLS.
 
-OT_DIAG_LOG=true writes <workspace_dir>/diagnostics/<timestamp>.jsonl, any other value is the file to write. Every line
+OT_DIAG_LOG=true writes diagnostics/runs/<timestamp>.jsonl in the OneTrainer folder, any other value is the file to write. Every line
 is one record and is flushed at once, so a crash or a GPU hang still leaves everything up to it. Records:
   header   versions, GPU, the allocator and GPU environment variables, whether MemPools are used, the config (no secrets)
   step     every optimizer step: loss, seconds since the previous step, memory now and its peak since the last record
@@ -113,9 +113,10 @@ class RunDiagnostics:
         from modules.util import multi_gpu_util as multi
         if not multi.is_master():
             return
+        from modules.util import path_util
         from modules.util.time_util import get_string_timestamp
         if value.lower() in _TRUE:
-            path = os.path.join(config.workspace_dir, "diagnostics", f"{get_string_timestamp()}.jsonl")
+            path = path_util.diagnostics_path("runs", f"{get_string_timestamp()}.jsonl")
         else:
             path = value
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

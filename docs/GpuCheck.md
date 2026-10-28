@@ -15,8 +15,8 @@ GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA to
                                                           # ComfyUI models/vae/ae.safetensors; read offline)
 ```
 
-It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to the current
-directory, or to `--out-dir`. The files are rewritten after every check, so a crash or a GPU hang still leaves the
+It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to
+`diagnostics/rocm_check/` in the OneTrainer folder, or to `--out-dir`. The files are rewritten after every check, so a crash or a GPU hang still leaves the
 results up to the check that was running (the report names it). The exit code is 1 if any check failed.
 
 ## What it checks

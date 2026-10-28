@@ -1,4 +1,7 @@
 import faulthandler
+import os
+
+from modules.util import path_util
 
 
 class ProfilingWindowController:
@@ -10,9 +13,11 @@ class ProfilingWindowController:
         return self.view
 
     def dump_stack(self):
-        with open('stacks.txt', 'w') as f:
+        path = path_util.diagnostics_path('stacks.txt')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
             faulthandler.dump_traceback(f)
-        self.view.set_message('Stack dumped to stacks.txt')
+        self.view.set_message(f'Stack dumped to {path}')
 
     def start_profiler(self):
         from scalene import scalene_profiler

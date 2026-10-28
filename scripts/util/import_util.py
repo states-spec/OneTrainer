@@ -52,6 +52,14 @@ def script_imports(allow_zluda: bool = True):
     onetrainer_lib_path = Path(__file__).absolute().parent.parent.parent
     sys.path.insert(0, str(onetrainer_lib_path))
 
+    # TunableOp (PYTORCH_TUNABLEOP_ENABLED=1) keeps its results with the other diagnostic output instead of the working
+    # directory, unless PYTORCH_TUNABLEOP_FILENAME names a file. Set before torch is imported, which reads it.
+    if os.environ.get("PYTORCH_TUNABLEOP_ENABLED", "").strip().lower() in ("1", "true", "on", "yes") \
+            and not os.environ.get("PYTORCH_TUNABLEOP_FILENAME"):
+        from modules.util import path_util
+        os.makedirs(path_util.diagnostics_path("tunableop"), exist_ok=True)
+        os.environ["PYTORCH_TUNABLEOP_FILENAME"] = path_util.diagnostics_path("tunableop", "tunableop_results%d.csv")
+
     if allow_zluda and sys.platform.startswith('win'):
         from modules.zluda import ZLUDAInstaller
 

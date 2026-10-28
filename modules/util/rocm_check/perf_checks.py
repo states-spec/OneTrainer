@@ -142,6 +142,7 @@ def core_bench(ctx: Ctx) -> dict:
     out["conv first call ms"] = (time.perf_counter() - t1) * 1000
     out["conv fp32 512px ms"] = ctx.bench(lambda: F.conv2d(x, w, padding=1))
     out["total s"] = time.perf_counter() - t0
+    out["blas"] = str(torch.backends.cuda.preferred_blas_library()).removeprefix("_BlasBackend.")
     return out
 
 
@@ -150,7 +151,12 @@ def runtime_switches(ctx: Ctx, rec: Rec):
     rec.info()
     variants = {"default": {}}
     if ctx.is_rocm:
-        variants["rocBLAS instead of hipBLASLt (TORCH_BLAS_PREFER_HIPBLASLT=0)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "0"}
+        # the library PyTorch doesn't pick for this GPU: on gfx1100 the default is already rocBLAS (Cublas), so
+        # TORCH_BLAS_PREFER_HIPBLASLT=0 changed nothing (bit-identical training runs)
+        if "Cublaslt" in str(torch.backends.cuda.preferred_blas_library()):
+            variants["rocBLAS instead of hipBLASLt (TORCH_BLAS_PREFER_HIPBLASLT=0)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "0"}
+        else:
+            variants["hipBLASLt instead of rocBLAS (TORCH_BLAS_PREFER_HIPBLASLT=1)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "1"}
         variants["MIOPEN_FIND_MODE=FAST"] = {"MIOPEN_FIND_MODE": "FAST"}
     if ctx.full:
         variants["TunableOp (PYTORCH_TUNABLEOP_ENABLED=1, tuned in this run)"] = {
@@ -179,7 +185,7 @@ def runtime_switches(ctx: Ctx, rec: Rec):
                 ratio = base[key] / value if value else float("nan")
                 parts.append(f"{key.removesuffix(' ms')} {value:.2f} ms" + ("" if name == "default" else f" ({ratio:.2f}x)"))
                 rec.metric(f"{name}: {key}", value)
-        rec.line(f"{name} (total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
+        rec.line(f"{name} (BLAS {result.get('blas', '?')}, total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
         errors = {k: v for k, v in result.items() if k.endswith(" err")}
         if errors:
             worst = max(errors, key=errors.get)

@@ -233,6 +233,11 @@ def alloc_checks(ctx: Ctx) -> dict:
        gpu_only=True, note="runs the VAE, conv and (with --full) offloading checks again under each allocator")
 def allocator(ctx: Ctx, rec: Rec):
     rec.info()
+    # PyTorch reads the first of these that is set; wrong results under expandable_segments fail the check only when
+    # this setup uses it, else they warn (it is off by default)
+    current = next((os.environ[k] for k in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+                    if os.environ.get(k)), "")
+    in_use = any(part.replace(" ", "").lower() == "expandable_segments:true" for part in current.split(","))
     default = _without_expandable(os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
     expandable = ",".join(filter(None, [default, "expandable_segments:True"]))
     wrong = {}
@@ -254,11 +259,17 @@ def allocator(ctx: Ctx, rec: Rec):
         wrong[name] = 0
         for check_name, r in result["checks"].items():
             wrong[name] += len(r["failures"])
-            rec.expect(not r["failures"], f"{name}: {check_name}: {r['status']}"
-                       + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else ""))
+            text = f"{name}: {check_name}: {r['status']}" \
+                + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else "")
+            if r["failures"] and name == "expandable_segments" and not in_use:
+                rec.warn(text)
+            else:
+                rec.expect(not r["failures"], text)
     if wrong.get("expandable_segments") and wrong.get("default") == 0:
-        rec.fail("expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
-                 "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)")
+        (rec.fail if in_use else rec.warn)(
+            "expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
+            "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)"
+            + (". This setup uses it now" if in_use else "; this setup doesn't use it"))
     elif wrong.get("default"):
         rec.fail("wrong results even with the default allocator: a driver, firmware or hardware (VRAM clock, "
                  "undervolt, temperature) problem, not an allocator setting")

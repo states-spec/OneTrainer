@@ -140,7 +140,6 @@ def training_runs(ctx: Ctx, rec: Rec):
     from modules.util.diag_report import load, summarize
     from modules.util.rocm_check.tiny_chroma import build_dataset, build_tiny_chroma
 
-    rec.info()
     base_dir = tempfile.mkdtemp(prefix="rocm_check_training_", dir=ctx.out_dir if os.path.isdir(ctx.out_dir) else None)
     failed = False
     try:

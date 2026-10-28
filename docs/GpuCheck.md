@@ -55,7 +55,8 @@ results up to the check that was running (the report names it). The exit code is
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
    runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
-   and, with `--full`, offloading checks run again under each allocator), the offloading and disk-streaming
+   and, with `--full`, offloading checks run again under each allocator; wrong results under `expandable_segments`
+   fail the check only when your setup uses it, and warn otherwise), the offloading and disk-streaming
    checks and a model part move with and without dedicated MemPools (`OT_ROCM_MEM_POOLS`), and `torch.compile`.
 
 5. **Training run (tiny Chroma)**: a Chroma model with random weights and a small masked, captioned dataset, built

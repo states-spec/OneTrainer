@@ -90,6 +90,12 @@ def adapters(ctx: Ctx, rec: Rec):
         x = _rand(ctx, 2, 1024, in_f, seed=5).to(ctx.device, torch.bfloat16)
         base = nn.Linear(in_f, out_f).to(ctx.device, torch.bfloat16).requires_grad_(False)
         x.requires_grad_()
+        # the GPU raises its clocks only after some time under load: without this, the first timing (no adapter)
+        # came out slower than LoRA and OFT on the 7900 XTX
+        warm_until = time.perf_counter() + 0.5
+        while time.perf_counter() < warm_until:
+            base(x).float().sum().backward()
+        ctx.sync()
         t_base = ctx.bench(lambda: base(x).float().sum().backward())
         rec.metric("fwd+bwd ms 2x1024x3072 no adapter", t_base)
         for name, factory in _adapter_factories(ctx.device).items():

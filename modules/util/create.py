@@ -297,6 +297,24 @@ def _changed_optimizer_settings(group_name: str, saved_group: dict, new_group: d
     return changed
 
 
+def _d_restart_note(optimizer_config: TrainOptimizerConfig, saved_group: dict | None, learning_rate: float) -> str:
+    # Resuming the backup's weights without its optimizer state is a short re-warmup for Adam-like optimizers, but one
+    # that adapts its step size D (Prodigy, D-Adaptation) starts again at Initial D and measures D by how far the
+    # weights move from where it starts. From weights that are already trained they move little: a Chroma LoRA
+    # resumed from an ADOPT_ADV backup kept D at Initial D (1e-4) for 450 steps, a fresh one reached 1e-2.
+    if not optimizer_config.optimizer.is_adaptive:
+        return ""
+    note = (f" {optimizer_config.optimizer} starts its step size D again at Initial D ({optimizer_config.d0}) and "
+            f"estimates it from how far the weights move from the backup's, which are already trained, so D can stay "
+            f"at Initial D and the training barely moves.")
+    saved_lr = None if saved_group is None or saved_group.get("lr") is None \
+        else saved_group["lr"] * saved_group.get("d", 1.0)
+    if saved_lr and learning_rate:
+        note += (f" The backup's run trained with a step size of {saved_lr:.3g}: an Initial D of about "
+                 f"{saved_lr / learning_rate:.3g} (at learning rate {learning_rate:g}) continues at that pace.")
+    return note
+
+
 def create_optimizer(
         parameter_group_collection: NamedParameterGroupCollection,
         state_dict: dict | None,
@@ -1211,7 +1229,21 @@ def create_optimizer(
             )
 
     if state_dict is not None and optimizer is not None and optimizer_config.optimizer.is_adv_optm:
+        saved_group = (state_dict.get("param_groups") or [None])[0]
+        same_optimizer = (state_dict.get("param_group_optimizer_mapping") or [None])[0] == str(optimizer_config.optimizer)
         state_dict = _check_adv_optm_state_version(state_dict)
+        if state_dict is None and optimizer_config.optimizer.is_adaptive and same_optimizer and saved_group \
+                and "d" in saved_group:
+            # the per-parameter statistics can't be loaded, but Prodigy's step size D is one number per group: keep the
+            # D the run reached (and its step counter), or a resume in the middle of a run starts again at Initial D
+            for group in optimizer.param_groups:
+                for key in ("d", "d_max", "k"):
+                    if key in saved_group:
+                        group[key] = saved_group[key]
+            print(f"Warning: {optimizer_config.optimizer} continues with the backup's step size D "
+                  f"({saved_group['d']:.3g}); its other statistics start again.")
+        elif state_dict is None and (note := _d_restart_note(optimizer_config, saved_group, config.learning_rate)):
+            print("Warning:" + note)
 
     if state_dict is not None and optimizer is not None:
         if 'param_group_mapping' not in state_dict:
@@ -1244,6 +1276,8 @@ def create_optimizer(
             param_groups = []
             state_index = 0
             changed_settings = []
+            # groups that start with a fresh state although training continues from the backup, and why
+            fresh_groups, other_optimizer_group = [], None
 
             for new_group_index, unique_group_name in enumerate(new_group_mapping):
                 if (unique_group_name in old_group_mapping and str(config.optimizer.optimizer) ==
@@ -1267,6 +1301,13 @@ def create_optimizer(
                     old_group['initial_lr'] = new_group['initial_lr']
                 else:
                     # the group state was not saved, initialize with an empty group state
+                    if unique_group_name in old_group_mapping:
+                        old_group_index = old_group_mapping.index(unique_group_name)
+                        fresh_groups.append(f"{unique_group_name} was trained with "
+                                            f"{old_group_optimizer_mapping[old_group_index]}")
+                        other_optimizer_group = other_optimizer_group or old_param_groups[old_group_index]
+                    else:
+                        fresh_groups.append(f"{unique_group_name} is not in the backup")
                     new_group = new_param_groups[new_group_index]
                     new_group['params'][:] = range(state_index, state_index + len(new_group['params']))
                     state_index += len(new_group['params'])
@@ -1274,6 +1315,14 @@ def create_optimizer(
 
             state_dict['state'] = state
             state_dict['param_groups'] = param_groups
+
+            if fresh_groups:
+                # silent before: a run continued from another run's backup trained on with a fresh optimizer state
+                print(f"Warning: the backup's optimizer state is not used for {'; '.join(fresh_groups)}. Training "
+                      f"continues on the backup's weights with a fresh {config.optimizer.optimizer} state."
+                      + (_d_restart_note(optimizer_config, other_optimizer_group, config.learning_rate)
+                         + " Or continue with the optimizer the backup was made with."
+                         if other_optimizer_group is not None and optimizer_config.optimizer.is_adaptive else ""))
 
             if changed_settings:
                 print("Warning: these optimizer settings differ between the backup and the config. The training "

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import modules.util.multi_gpu_util as multi
+import modules.util.nvcomp_util as nvcomp_util
 from modules.dataLoader.BaseDataLoader import BaseDataLoader
 from modules.model.BaseModel import BaseModel
 from modules.modelLoader.BaseModelLoader import BaseModelLoader
@@ -238,6 +239,20 @@ class GenericTrainer(BaseTrainer):
                 f"can't: that needs an NVIDIA GPU with compute capability 8.9 or newer, or an AMD Instinct MI300/MI350 "
                 f"or Radeon RX 9000 series GPU. Use float8 (W8) to store the weights in 8 bits and compute in the "
                 f"train data type, or int W8A8 / GGUF A8 int / bfloat16 A8 int for int8 compute."
+            )
+
+        # the compressed weight data types need nvCOMP (NVIDIA only). Without it the loader stops while it builds
+        # the first compressed layer (quantization_util); stopped here, nothing has loaded yet.
+        compressed_parts = [part for part in self.config.model_type.model_parts()
+                            if getattr(self.config, part).weight_dtype.is_compressed()]
+        if compressed_parts and not nvcomp_util.available():
+            raise ValueError(
+                f"The compressed weight data types "
+                f"({', '.join(f'{part}: {getattr(self.config, part).weight_dtype}' for part in compressed_parts)}) "
+                f"need nvCOMP, which isn't available: {nvcomp_util.unavailable_reason()}. Use the same data type "
+                f"without compression "
+                f"({', '.join(f'{part}: {getattr(self.config, part).weight_dtype.uncompressed()}' for part in compressed_parts)}"
+                f", the same choice without 'compressed' on the model tab): the same weights, uncompressed."
             )
 
     def __save_config_to_workspace(self):

@@ -46,3 +46,6 @@ rocm_check_miopen_db/
 /diag_ab/
 config_diff.txt
 CLAUDE.md
+
+# PyTorch TunableOp results (PYTORCH_TUNABLEOP_ENABLED=1), written to the folder training runs from
+/tunableop_results*.csv

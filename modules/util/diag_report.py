@@ -165,8 +165,13 @@ def _loss_agreement(a: Run, b: Run) -> str:
     differ = [s for s in common if la[s] != lb[s]]
     if not differ:
         return f"identical losses over {len(common)} steps"
-    worst = max(abs(la[s] - lb[s]) / max(abs(la[s]), 1e-12) for s in common)
-    return f"losses differ from step {differ[0]} on ({len(differ)} of {len(common)} steps), max rel diff {worst:.2e}"
+    rel = {s: abs(la[s] - lb[s]) / max(abs(la[s]), 1e-12) for s in common}
+    mean_a, mean_b = statistics.fmean(la[s] for s in common), statistics.fmean(lb[s] for s in common)
+    # the first differing step shows the size of the change itself (one forward with the same weights when it is step
+    # 0); the later ones include how far the runs have drifted apart since
+    return (f"losses differ from step {differ[0]} on ({len(differ)} of {len(common)} steps): rel diff "
+            f"{rel[differ[0]]:.2e} at step {differ[0]}, mean {statistics.fmean(rel.values()):.2e}, max "
+            f"{max(rel.values()):.2e}; mean loss {mean_a:.5g} vs {mean_b:.5g}")
 
 
 def _weights_agreement(a: Run, b: Run, compare_weights: bool) -> str:
@@ -194,6 +199,7 @@ def _weights_difference(path_a: str, path_b: str) -> str:
 
     fa, fb = files(path_a), files(path_b)
     worst, worst_key = 0.0, ""
+    errors = []
     for name in sorted(set(fa) & set(fb)):
         with safe_open(fa[name], framework="pt") as a, safe_open(fb[name], framework="pt") as b:
             for key in sorted(set(a.keys()) & set(b.keys())):
@@ -201,9 +207,14 @@ def _weights_difference(path_a: str, path_b: str) -> str:
                 if ta.shape != tb.shape:
                     return f"{key}: shapes {tuple(ta.shape)} vs {tuple(tb.shape)}"
                 err = ((ta - tb).norm() / ta.norm().clamp_min(1e-30)).item() if ta.numel() else 0.0
+                errors.append(err)
                 if err > worst:
                     worst, worst_key = err, key
-    return f"largest relative difference {worst:.2e} ({worst_key})" if worst_key else "no common tensors"
+    if not worst_key:
+        return "no common tensors"
+    # tensors that start at zero (LoRA B/up) show the largest relative differences; the median shows the rest
+    return (f"largest relative difference {worst:.2e} ({worst_key}), median {statistics.median(errors):.2e} over "
+            f"{len(errors)} tensors")
 
 
 def report(paths: list[str], compare_weights: bool = True) -> tuple[str, dict]:

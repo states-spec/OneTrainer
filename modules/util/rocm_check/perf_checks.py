@@ -123,6 +123,14 @@ def core_bench(ctx: Ctx) -> dict:
         w = _rand(ctx, n, k, scale=k ** -0.5, seed=2)
         g = torch.ones(m, n, device=ctx.device, dtype=torch.bfloat16)
         out[name + " ms"] = ctx.bench(lambda x=x, w=w, g=g: F.linear(x, w).backward(g), iters=10 if ctx.full else 5)
+        # the kernels picked for this process (TunableOp's tuned ones after the timing above) against an fp64 CPU
+        # reference: a switch that is faster but wrong shows here, not only as training runs that drift apart
+        x.grad = None
+        y = F.linear(x, w)
+        y.backward(g)
+        x64, w64 = x.detach().to("cpu", torch.float64), w.to("cpu", torch.float64)
+        out[name + " out err"] = rel_err(y, x64 @ w64.T)
+        out[name + " dx err"] = rel_err(x.grad, g.to("cpu", torch.float64) @ w64)
     q = _rand(ctx, 1, 24, 1536, 128, seed=3).requires_grad_()
     out["attention 24x1536x128 ms"] = ctx.bench(
         lambda: F.scaled_dot_product_attention(q, q, q).backward(torch.ones_like(q)), iters=10 if ctx.full else 5)
@@ -172,6 +180,12 @@ def runtime_switches(ctx: Ctx, rec: Rec):
                 parts.append(f"{key.removesuffix(' ms')} {value:.2f} ms" + ("" if name == "default" else f" ({ratio:.2f}x)"))
                 rec.metric(f"{name}: {key}", value)
         rec.line(f"{name} (total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
+        errors = {k: v for k, v in result.items() if k.endswith(" err")}
+        if errors:
+            worst = max(errors, key=errors.get)
+            # bf16 inputs: the same limit as the BLAS correctness check
+            rec.expect(errors[worst] < 2e-2, f"{name}: linear forward/backward vs fp64, worst rel err "
+                                             f"{errors[worst]:.2e} ({worst.removesuffix(' err')}, limit 2e-02)")
     rec.line("(x = speed relative to default; >1 is faster. TunableOp's first run includes tuning; its results are "
              "saved in rocm_check_tunableop*.csv)")
 

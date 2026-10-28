@@ -53,7 +53,8 @@ results up to the check that was running (the report names it). The exit code is
      caching runs it), and with MIOpen off or the math attention kernel: it names the first layer that goes wrong
      and which switch avoids it
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
-   runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
+   runtime switches that can only be set at startup, each in a fresh process (and each one's linear layers checked
+   against an fp64 reference, so a faster but wrong setting fails): rocBLAS instead of hipBLASLt,
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
    and, with `--full`, offloading checks run again under each allocator; wrong results under `expandable_segments`
    fail the check only when your setup uses it, and warn otherwise), the offloading and disk-streaming

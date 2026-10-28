@@ -55,8 +55,9 @@ The first log is the reference. The report shows:
 - per phase: how often, how long, its peak reserved memory, in brackets how much the phase itself added to what
   was reserved before it (the peak also counts the cache training left behind), and the most memory held unused
   after it;
-- for each run against the first: where the losses part, and whether the saved weights are bit-identical (if not,
-  the largest relative difference of a tensor, read from the saved files);
+- for each run against the first: where the losses part (the difference at that first step, the mean and the
+  largest, and both mean losses), and whether the saved weights are bit-identical (if not, the largest and the median
+  relative difference of a tensor, read from the saved files; LoRA B tensors start at zero, so theirs is the largest);
 - for repeated runs of the same variant: the same comparison among them, which is the run-to-run noise to judge the
   differences by, and each variant's mean, minimum and maximum.
 

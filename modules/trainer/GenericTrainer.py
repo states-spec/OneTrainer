@@ -65,6 +65,7 @@ class GenericTrainer(BaseTrainer):
 
     previous_sample_time: float
     sample_queue: list[Callable]
+    default_sample_queued: bool
 
     parameters: list[Parameter]
 
@@ -206,6 +207,7 @@ class GenericTrainer(BaseTrainer):
         self.model_sampler = self.create_model_sampler(self.model)
         self.previous_sample_time = -1
         self.sample_queue = []
+        self.default_sample_queued = False
 
         self.parameters = self.model.parameters.parameters()
 
@@ -271,6 +273,7 @@ class GenericTrainer(BaseTrainer):
             for fun in self.sample_queue:
                 fun()
         self.sample_queue = []
+        self.default_sample_queued = False
 
     def __sample_loop(
             self,
@@ -795,7 +798,14 @@ class GenericTrainer(BaseTrainer):
                 if self.commands.get_stop_command():
                     multi.warn_parameter_divergence(self.parameters, train_device)
 
-                if not self.commands.get_stop_command() and self.__needs_sample(train_progress) or self.commands.get_and_reset_sample_default_command():
+                # A "sample now" request on a step that samples anyway, or while a sample still waits in the queue
+                # (with gradient accumulation it runs at the next update), is that same sample, so it is used up
+                # here without a second one. The request used to stay set behind the scheduled sample's `or`, and
+                # sampled the same weights again on the next step.
+                scheduled_sample = not self.commands.get_stop_command() and self.__needs_sample(train_progress)
+                requested_sample = self.commands.get_and_reset_sample_default_command()
+                if (scheduled_sample or requested_sample) and not self.default_sample_queued:
+                    self.default_sample_queued = True
                     self.__enqueue_sample_during_training(
                         lambda: self.__sample_during_training(train_progress, train_device)
                     )

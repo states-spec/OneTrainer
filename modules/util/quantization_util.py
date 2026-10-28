@@ -209,7 +209,9 @@ def __replace_linear_layers(
 def __quantized_linear_class_and_kwargs(dtype: DataType):
     # only the W8A8 dtypes have a compressed variant, so this covers every layer that can be built compressed
     if dtype.is_compressed() and not nvcomp_util.available():
-        raise RuntimeError("a compressed weight data type is selected but nvCOMP is not available")
+        raise RuntimeError(f"a compressed weight data type is selected but nvCOMP is not available "
+                           f"({nvcomp_util.unavailable_reason()}). Use {dtype.uncompressed()} instead: the same "
+                           f"weights without the compression.")
 
     # deferred imports: the quantized Linear modules pull in heavy backends, so they stay
     # out of module scope and are only imported once a quantized dtype is actually requested

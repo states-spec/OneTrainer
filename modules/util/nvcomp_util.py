@@ -1,24 +1,37 @@
 import torch
 
-try:
-    from modules.util.nvcomp_util_lowlevel import compress as compress
-    from modules.util.nvcomp_util_lowlevel import decompress_into
-    _AVAILABLE = True
-    print("nvCOMP: low-level batched-ANS backend loaded")
-except Exception as lowlevel_error:
+_UNAVAILABLE_REASON = ""
+if torch.version.hip is not None:
+    # nvCOMP is NVIDIA-only (CUDA), so a ROCm build of PyTorch never has a backend: it isn't tried, and the
+    # "no backend available" line no longer prints at every start. A compressed weight data type still says why it
+    # can't be used (quantization_util).
+    _AVAILABLE = False
+    _UNAVAILABLE_REASON = "nvCOMP is NVIDIA-only (CUDA) and this PyTorch is a ROCm build"
+else:
     try:
-        from modules.util.nvcomp_util_highlevel import compress as compress
-        from modules.util.nvcomp_util_highlevel import decompress_into
+        from modules.util.nvcomp_util_lowlevel import compress as compress
+        from modules.util.nvcomp_util_lowlevel import decompress_into
         _AVAILABLE = True
-        print(f"nvCOMP: high-level Codec backend loaded (low-level unavailable: {type(lowlevel_error).__name__}: {lowlevel_error})")
-    except Exception as highlevel_error:
-        _AVAILABLE = False
-        print(f"nvCOMP: no backend available (low-level: {type(lowlevel_error).__name__}: {lowlevel_error}; "
-              f"high-level: {type(highlevel_error).__name__}: {highlevel_error})")
+        print("nvCOMP: low-level batched-ANS backend loaded")
+    except Exception as lowlevel_error:
+        try:
+            from modules.util.nvcomp_util_highlevel import compress as compress
+            from modules.util.nvcomp_util_highlevel import decompress_into
+            _AVAILABLE = True
+            print(f"nvCOMP: high-level Codec backend loaded (low-level unavailable: {type(lowlevel_error).__name__}: {lowlevel_error})")
+        except Exception as highlevel_error:
+            _AVAILABLE = False
+            _UNAVAILABLE_REASON = (f"no backend available (low-level: {type(lowlevel_error).__name__}: {lowlevel_error}; "
+                                   f"high-level: {type(highlevel_error).__name__}: {highlevel_error})")
+            print(f"nvCOMP: {_UNAVAILABLE_REASON}")
 
 
 def available() -> bool:
     return _AVAILABLE
+
+
+def unavailable_reason() -> str:
+    return _UNAVAILABLE_REASON
 
 
 @torch.library.custom_op("nvcomp_ot::decompress", mutates_args=())

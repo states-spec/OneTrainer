@@ -19,7 +19,12 @@ from modules.ui.VideoToolUIController import VideoToolUIController
 from modules.util import create
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
-from modules.util.config.TrainConfig import TrainConfig, prepare_run_name
+from modules.util.config.TrainConfig import (
+    TrainConfig,
+    get_output_model_destination,
+    is_auto_run_name_mode,
+    prepare_run_name,
+)
 from modules.util.profiling_util import PeakMemoryRecorder
 from modules.util.tensorboard_util import TensorboardProcess
 from modules.util.torch_util import print_fragmentation, torch_gc
@@ -315,6 +320,16 @@ class TrainUIController:
                                 self.train_config.run_name, is_new_invocation=is_new_invocation)
         self.view.ui_state.get_var("run_name").set(name)
 
+    def __run_name_used(self) -> bool:
+        # an automatic (Default/Friendly) name that a run has already used, e.g. one that came with a loaded config:
+        # every run writes its config to workspace/config/<run name>.json, and the final model to <run name>.<ext>
+        config = self.train_config
+        if not is_auto_run_name_mode(config.run_name_mode) or not config.run_name.strip():
+            return False
+        return os.path.exists(get_output_model_destination(
+            config.final_output_dir, config.run_name, config.output_model_format)) \
+            or os.path.exists(os.path.join(config.workspace_dir, "config", f"{config.run_name}.json"))
+
     def start_training(self):
         if self.training_thread is None:
             errors = flush_and_validate_all()
@@ -322,7 +337,8 @@ class TrainUIController:
                 self.view.show_validation_errors(errors)
                 return
 
-            self.sync_run_name()
+            # automatic names are new for each run: one a run already used would make this run write over its model
+            self.sync_run_name(is_new_invocation=self.__run_name_used())
 
             if self.train_config.clear_cache_before_training and self.train_config.latent_caching \
                     and not self.view.confirm("Clear Cache Before Training", "Clear cache?"):

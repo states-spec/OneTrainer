@@ -174,10 +174,15 @@ def finite(t: torch.Tensor) -> bool:
     return bool(torch.isfinite(t).all().item())
 
 
-def run_child(ctx: Ctx, task: str, env: dict[str, str], timeout: float = 900.0) -> dict:
-    """runs one CHILD_TASKS entry in a fresh process with extra environment variables, returns its result dict"""
+def run_child(ctx: Ctx, task: str, env: dict[str, str | None], timeout: float = 900.0) -> dict:
+    """runs one CHILD_TASKS entry in a fresh process with extra environment variables (None removes one), returns its
+    result dict"""
     child_env = os.environ.copy()
-    child_env.update(env)
+    for key, value in env.items():
+        if value is None:
+            child_env.pop(key, None)
+        else:
+            child_env[key] = value
     cmd = [sys.executable, ctx.script_path, "--child", task, "--device", str(ctx.device),
            "--out-dir", ctx.out_dir, "--seed", str(ctx.seed)]
     if ctx.full:

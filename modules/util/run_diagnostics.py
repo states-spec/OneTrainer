@@ -141,9 +141,10 @@ class RunDiagnostics:
         now = time.perf_counter()
         seconds = None if self.__last_step_time is None else now - self.__last_step_time
         # a step whose interval also holds sampling, a backup or a part move is no measure of the step time
-        self.__write("step", step=global_step, epoch=epoch, loss=loss, seconds=seconds,
-                     clean=self.__events_since_step == 0, **self.__memory(full=False),
-                     **(self.__sensors() if global_step % 20 == 0 else {}))
+        with self.__guard(f"step {global_step}"):
+            self.__write("step", step=global_step, epoch=epoch, loss=loss, seconds=seconds,
+                         clean=self.__events_since_step == 0, **self.__memory(full=False),
+                         **(self.__sensors() if global_step % 20 == 0 else {}))
         self.__last_step_time = now
         self.__events_since_step = 0
         if self.__depth == 0:
@@ -155,21 +156,24 @@ class RunDiagnostics:
             yield
             return
         outer = self.__depth == 0
-        before = self.__memory(full=False)
-        if outer:
-            self.__reset_peaks()
+        before = {}
+        with self.__guard(f"the start of the {name} phase"):
+            before = self.__memory(full=False)
+            if outer:
+                self.__reset_peaks()
         self.__depth += 1
         start = time.perf_counter()
         try:
             yield
         finally:
             self.__depth -= 1
-            after = self.__memory(full=True)
-            self.__write("phase", name=name, seconds=time.perf_counter() - start,
-                         before={k: before.get(k) for k in ("allocated", "reserved")}, **fields, **after)
-            self.__events_since_step += 1
-            if outer:
-                self.__reset_peaks()
+            with self.__guard(f"the {name} phase"):
+                after = self.__memory(full=True)
+                self.__write("phase", name=name, seconds=time.perf_counter() - start,
+                             before={k: before.get(k) for k in ("allocated", "reserved")}, **fields, **after)
+                self.__events_since_step += 1
+                if outer:
+                    self.__reset_peaks()
 
     def phase_method(self, name: str):
         """decorator: the method's whole call is one phase"""
@@ -188,15 +192,26 @@ class RunDiagnostics:
             try:
                 return fn(*args, **kwargs)
             except BaseException as e:
-                self.error(e)
+                with self.__guard("the error"):
+                    self.error(e)
                 raise
         return inner
+
+    @contextlib.contextmanager
+    def __guard(self, what: str):
+        # the log must never end a run or replace the exception that is ending one: after a GPU fault the memory
+        # queries raise too, and from inside a finally or except block that error would be the one reported
+        try:
+            yield
+        except Exception as e:
+            print(f"Run diagnostics: could not record {what}: {type(e).__name__}: {e}")
 
     def move(self, direction: str, parts: list[str], moved: bool, seconds: float):
         if self.__file is None or not moved:
             return
-        self.__write("move", direction=direction, parts=list(parts), seconds=seconds, **self.__memory(full=True))
         self.__events_since_step += 1
+        with self.__guard(f"the {direction} of {', '.join(parts)}"):
+            self.__write("move", direction=direction, parts=list(parts), seconds=seconds, **self.__memory(full=True))
 
     def output(self, path: str):
         """a digest of the saved weights (tensor names, dtypes, shapes and data, not the file's metadata, which holds

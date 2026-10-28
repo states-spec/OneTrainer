@@ -164,6 +164,16 @@ def runtime_switches(ctx: Ctx, rec: Rec):
             "PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS": "100",
             "PYTORCH_TUNABLEOP_FILENAME": os.path.join(ctx.out_dir, "rocm_check_tunableop%d.csv"),
         }
+    # every run starts without the switches compared here, so "default" is PyTorch's default even when the shell sets
+    # one (TunableOp from the environment would also tune into, and read, the training runs' results file)
+    switches = sorted({"TORCH_BLAS_PREFER_HIPBLASLT", "MIOPEN_FIND_MODE", "PYTORCH_TUNABLEOP_ENABLED",
+                       "PYTORCH_TUNABLEOP_TUNING", "PYTORCH_TUNABLEOP_FILENAME",
+                       *(key for env in variants.values() for key in env)})
+    inherited = [f"{key}={os.environ[key]}" for key in switches if key in os.environ]
+    if inherited:
+        rec.line(f"set in this environment and left out of every run here, so that 'default' is PyTorch's default: "
+                 f"{', '.join(inherited)}")
+    variants = {name: {**dict.fromkeys(switches), **env} for name, env in variants.items()}
     if ctx.is_rocm:
         # each run gets an empty MIOpen tuning database, so "conv first call" compares like with like
         for i, env in enumerate(variants.values()):

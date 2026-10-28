@@ -195,7 +195,8 @@ def training_runs(ctx: Ctx, rec: Rec):
             rec.expect(ok and count > 0 and blank == 0,
                        f"{name}: finished in {r['seconds']:.0f} s, {len(w)} LoRA tensors "
                        f"{'finite' if ok else 'with NaN/inf'}, {count} sample images ({blank} blank)")
-            failed |= not ok
+            # keep the runs for a look at them: missing or blank samples fail the check as NaN weights do
+            failed |= not (ok and count > 0 and blank == 0)
 
         if "baseline" not in weights:
             return

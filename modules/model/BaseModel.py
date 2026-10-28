@@ -231,7 +231,9 @@ class BaseModel(metaclass=ABCMeta):
 
         conductor = self.offload_conductor.get(stem)
         materialize_fn = self.materialize_fn.get(stem)
-        cache_in_ram = self.cache_in_ram.get(stem, True)
+        # keyed by part name (the loaders build it from model_parts()), unlike the stem-keyed dicts above: by stem,
+        # the first of several text encoders (text_encoder_1) always kept its weights in RAM
+        cache_in_ram = self.cache_in_ram.get(part, True)
 
         moved = False
         if conductor is not None:

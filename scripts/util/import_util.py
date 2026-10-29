@@ -1,10 +1,16 @@
 def script_imports(allow_zluda: bool = True):
+    import faulthandler
     import logging
     import os
     import re
     import sys
     import warnings
     from pathlib import Path
+
+    # a crash in native code (segmentation fault in the GPU runtime, a kernel or a library) prints the Python stack of
+    # every thread to stderr, instead of only the shell's "Segmentation fault" line. No cost while nothing crashes.
+    if not faulthandler.is_enabled():
+        faulthandler.enable(all_threads=True)
 
     if sys.platform == 'win32':
         # PyTorch's Windows allocator can retain freed loading/quantization buffers in mimalloc arenas.

@@ -25,6 +25,7 @@ OT_DIAG_LOG=true ./start-ui.sh      # JSONL record of a run: memory, fragmentati
 ./run-cmd.sh diag_report a.jsonl b.jsonl   # summarize/compare those logs
 ./run-cmd.sh diag_ab --config-path cfg.json --config-value epochs=1   # same config under variants (default: MemPool A/B)
 ./run-cmd.sh train_probe --config-path cfg.json --steps 40   # per-step optimizer view: grads/moves per LoRA part, Prodigy D terms, outside changes, gradient check, mask/latent stats; saves nothing
+./run-cmd.sh config_diff old.json new.json   # every setting that differs after loading both as training does (migrated), hidden UI settings included
 ruff check .                     # lint config in pyproject.toml; E501 ignored, line-length 120
 pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, NOT ruff format)
 ```

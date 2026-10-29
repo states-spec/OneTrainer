@@ -299,6 +299,23 @@ def run_probe(config: TrainConfig, steps: int, check_every: int, out_dir: str):
             log("note: fused back pass is on, so the gradients are gone by the optimizer step; the per-step gradient "
                 "numbers and the gradient check need it off")
 
+        # where a run can get trained weights and optimizer state from: the newest complete backup in the workspace
+        # (Continue From Last Backup) or the base LoRA (a backup folder carries its optimizer state too)
+        log(f"workspace: {os.path.abspath(config.workspace_dir)}, cache: {os.path.abspath(config.cache_dir)}")
+        backups = config.get_backup_paths()
+        log(f"backups in the workspace before the run: {len(backups)}"
+            + "".join(f"\n    {path}{'' if os.path.isfile(os.path.join(path, 'meta.json')) else ' (incomplete)'}"
+                      for path in backups))
+        log(f"continue from last backup: {config.continue_last_backup}"
+            + (f" -> resumes {config.get_last_backup_path()}" if config.continue_last_backup and backups else ""))
+        lora = config.lora_model_name
+        if lora:
+            is_backup = os.path.isfile(os.path.join(lora, "meta.json"))
+            log(f"base LoRA: {os.path.abspath(lora)}" + (" (a backup folder: its optimizer state and progress load too)"
+                                                         if is_backup else ""))
+        else:
+            log("base LoRA: none")
+
         # nothing goes into the workspace's backups or saves: a timed backup written during a probe was resumed by
         # the next run (Continue From Last Backup), which then started from this probe's state
         config.backup_after_unit = TimeUnit.NEVER

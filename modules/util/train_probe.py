@@ -8,6 +8,7 @@ import time
 import types
 from collections import defaultdict
 
+from modules.module.FusedModule import FusedModuleGroup
 from modules.util import create, path_util
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
@@ -45,18 +46,26 @@ class _Probe:
         optimizer = model.optimizer
         self.names = {}
         self.dora_checks = []
-        hooked = total = dummies = 0
+        hooked = total = dummies = fused = 0
         for wrapper in model.adapters():
             for prefix, module in wrapper.lora_modules.items():
                 total += 1
                 if isinstance(module, wrapper.dummy_klass):
                     dummies += 1
                     continue
-                hooked += bool(module.is_applied and module.orig_module.forward == module.forward)
+                if isinstance(module, FusedModuleGroup):
+                    # fused qkv (ORIGINAL/COMFY/KOHYA formats): one adapter on the concatenated leaves, each leaf's
+                    # forward replaced by the group
+                    hooked += bool(module.is_applied)
+                    fused += 1
+                    peft = module.module
+                else:
+                    hooked += bool(module.is_applied and module.orig_module.forward == module.forward)
+                    peft = module
                 for name, p in module.named_parameters():
                     self.names[id(p)] = f"{prefix}.{name}"
-                if getattr(module, "dora_scale", None) is not None and len(self.dora_checks) < 8:
-                    self.dora_checks.append((prefix, module))
+                if getattr(peft, "dora_scale", None) is not None and len(self.dora_checks) < 8:
+                    self.dora_checks.append((prefix, peft))
 
         optimizer_params = [p for g in optimizer.param_groups for p in g["params"]]
         in_adapters = sum(id(p) in self.names for p in optimizer_params)
@@ -64,7 +73,8 @@ class _Probe:
         self.log(f"optimizer: {type(optimizer).__name__}, {len(optimizer.param_groups)} group(s), "
                  f"{len(optimizer_params)} tensors ({len(trainable)} require grad), "
                  f"{in_adapters} of them are adapter weights the model's LoRA modules use")
-        self.log(f"adapter modules: {total} ({dummies} dummies), {hooked} hooked into their layer")
+        self.log(f"adapter modules: {total} ({dummies} dummies, {fused} fused qkv groups), {hooked} hooked into "
+                 f"their layer")
         if in_adapters != len(optimizer_params):
             self.log("  WARNING: the optimizer holds tensors that are not the LoRA modules' weights")
         dtypes = defaultdict(int)
@@ -259,7 +269,7 @@ class _Probe:
             ratio = "n/a" if c["ratio"] is None else f"{c['ratio']:+.3f}"
             self.log(f"    gradient check: loss {c['loss_before']:.6f} -> {c['loss_after']:.6f}, change "
                      f"{c['actual_change']:+.3e}, predicted from the gradient {c['predicted_change']:+.3e}, "
-                     f"ratio {ratio} (near +1 = the gradient matches the loss)")
+                     f"ratio {ratio} (near +1 = the gradient matches the loss; noisy while steps are tiny, as at d0)")
         b = r.get("batch", {})
         if "latent_mask" in b:
             self.log(f"    batch mask mean {b['latent_mask']['mean']}  latent std {b.get('latent_image', {}).get('std')}"

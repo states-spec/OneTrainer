@@ -13,6 +13,7 @@ from modules.util import create, path_util
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.config.TrainConfig import TrainConfig
+from modules.util.enum.TimeUnit import TimeUnit
 
 import torch
 
@@ -297,6 +298,12 @@ def run_probe(config: TrainConfig, steps: int, check_every: int, out_dir: str):
         if config.optimizer.fused_back_pass:
             log("note: fused back pass is on, so the gradients are gone by the optimizer step; the per-step gradient "
                 "numbers and the gradient check need it off")
+
+        # nothing goes into the workspace's backups or saves: a timed backup written during a probe was resumed by
+        # the next run (Continue From Last Backup), which then started from this probe's state
+        config.backup_after_unit = TimeUnit.NEVER
+        config.save_every_unit = TimeUnit.NEVER
+        config.backup_before_save = False
 
         callbacks = TrainCallbacks()
         commands = TrainCommands()

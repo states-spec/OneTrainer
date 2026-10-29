@@ -86,7 +86,12 @@ class _Probe:
                     "betas", "beta3", "weight_decay", "cautious_wd", "prodigy_steps", "safeguard_warmup")
             self.log("  group " + ", ".join(f"{k}={g[k]}" for k in keys if k in g))
 
-        # a DoRA magnitude starts as the norm of its base weight: a wrong start would mean the adapters were built on
+        restored = sum(1 for p in optimizer_params if optimizer.state.get(p))
+        if restored:
+            g0 = optimizer.param_groups[0]
+            self.log(f"  RESTORED optimizer state (a backup): {restored} of {len(optimizer_params)} tensors have state "
+                     f"before the first step; k={g0.get('k')}, d={g0.get('d')}, d_numerator={g0.get('d_numerator')}")
+        # a DoRA magnitude starts as the norm of its base weight (a resumed LoRA has trained since): a wrong start would mean the adapters were built on
         # weights that weren't loaded yet
         from modules.util.quantization_util import get_unquantized_weight
         for prefix, module in self.dora_checks:
@@ -98,7 +103,7 @@ class _Probe:
             scale = module.dora_scale.detach().float().flatten()
             rel = ((scale - norm).norm() / norm.norm().clamp_min(1e-12)).item()
             self.log(f"  DoRA start check {prefix}: |magnitude - base weight norm| / |norm| = {rel:.2e} "
-                     f"(0 before the first step; base weight std {w.std().item():.3e})")
+                     f"(0 on a fresh start; base weight std {w.std().item():.3e})")
 
     # ---------------------------------------------------------------- hooks
     def install(self):

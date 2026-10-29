@@ -1348,7 +1348,24 @@ def create_optimizer(
             if optimizer_config.optimizer == Optimizer.PRODIGY_ADV:
                 _disable_prodigy_adv_nesterov(optimizer)
 
+        if optimizer_config.optimizer.is_adaptive:
+            _warn_stuck_d(optimizer_config, optimizer.param_groups[0])
+
     return optimizer
+
+
+def _warn_stuck_d(optimizer_config: TrainOptimizerConfig, group: dict):
+    # Prodigy grows D only while its estimate d_numerator / sum|s| exceeds D, and d_numerator sums
+    # dot(grad, start - weights). Once it is negative (weights that were already trained when the state started, and
+    # every step since moving around that point), D stays at Initial D, and a resumed backup carries that on: the
+    # user's Chroma LoRA resumed such a state run after run (d_numerator -3.7e-5 after 300+ steps, D 1e-4 throughout).
+    d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
+    if d is None or d0 is None or numerator is None or d != d0 or k < 20 or numerator > 0:
+        return
+    print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial D ({d0:g}) "
+          f"after {k} steps, and its estimate is negative (d_numerator {numerator:.3g}), so D will not grow from here: "
+          f"the training continues at learning rate x {d0:g}. For D to adapt again, start without this backup "
+          f"(Continue From Last Backup off, or a new workspace), or set Initial D to the step size you want.")
 
 
 def create_ema(

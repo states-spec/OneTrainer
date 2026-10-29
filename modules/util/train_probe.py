@@ -302,7 +302,11 @@ def run_probe(config: TrainConfig, steps: int, check_every: int, out_dir: str):
         # where a run can get trained weights and optimizer state from: the newest complete backup in the workspace
         # (Continue From Last Backup) or the base LoRA (a backup folder carries its optimizer state too)
         log(f"workspace: {os.path.abspath(config.workspace_dir)}, cache: {os.path.abspath(config.cache_dir)}")
-        backups = config.get_backup_paths()
+        # (get_backup_paths is newer than some checkouts this probe is copied into to compare versions)
+        backup_dir = os.path.join(config.workspace_dir, "backup")
+        backups = config.get_backup_paths() if hasattr(config, "get_backup_paths") else sorted(
+            (os.path.join(backup_dir, name) for name in os.listdir(backup_dir)
+             if os.path.isdir(os.path.join(backup_dir, name))), reverse=True) if os.path.isdir(backup_dir) else []
         log(f"backups in the workspace before the run: {len(backups)}"
             + "".join(f"\n    {path}{'' if os.path.isfile(os.path.join(path, 'meta.json')) else ' (incomplete)'}"
                       for path in backups))

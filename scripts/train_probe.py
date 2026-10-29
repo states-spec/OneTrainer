@@ -6,7 +6,6 @@ import argparse
 import os
 from types import SimpleNamespace
 
-from modules.util import path_util
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.optimizer_util import default_optimizer_config
 from modules.util.time_util import get_string_timestamp
@@ -42,7 +41,7 @@ def main():
     config = load_config(load_args, config)
 
     run_probe(config, args.steps, args.check_every,
-              args.out_dir or path_util.diagnostics_path("train_probe", get_string_timestamp()))
+              args.out_dir or os.path.join("diagnostics", "train_probe", get_string_timestamp()))
 
 
 if __name__ == '__main__':

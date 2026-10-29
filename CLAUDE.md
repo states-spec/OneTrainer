@@ -24,6 +24,7 @@ OT_PLATFORM_REQUIREMENTS=requirements-rocm.txt ./install.sh   # skip GPU auto-de
 OT_DIAG_LOG=true ./start-ui.sh      # JSONL record of a run: memory, fragmentation, timing, loss (docs/RunDiagnostics.md)
 ./run-cmd.sh diag_report a.jsonl b.jsonl   # summarize/compare those logs
 ./run-cmd.sh diag_ab --config-path cfg.json --config-value epochs=1   # same config under variants (default: MemPool A/B)
+./run-cmd.sh train_probe --config-path cfg.json --steps 40   # per-step optimizer view: grads/moves per LoRA part, Prodigy D terms, outside changes, gradient check, mask/latent stats; saves nothing
 ruff check .                     # lint config in pyproject.toml; E501 ignored, line-length 120
 pre-commit run --all-files       # pre-commit hooks + ruff --fix (linter only, NOT ruff format)
 ```

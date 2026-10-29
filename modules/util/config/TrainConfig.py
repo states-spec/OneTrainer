@@ -1147,8 +1147,14 @@ class TrainConfig(BaseConfig):
         return backup_paths
 
     def get_last_backup_path(self) -> str | None:
-        backup_paths = self.get_backup_paths()
-        return backup_paths[0] if backup_paths else None
+        # a backup writes its meta.json last (InternalModelSaverMixin), so a folder without it was cut off, e.g. by a
+        # crash while it was written. Resuming it loaded at most the weights, without the optimizer state and progress
+        for backup_path in self.get_backup_paths():
+            if os.path.isfile(os.path.join(backup_path, "meta.json")):
+                return backup_path
+            print(f"Skipping the incomplete backup '{backup_path}' (no meta.json: it was not finished, e.g. because "
+                  f"of a crash while it was written)")
+        return None
 
     def to_settings_dict(self, secrets: bool) -> dict:
         config = TrainConfig.default_values().from_dict(self.to_dict())

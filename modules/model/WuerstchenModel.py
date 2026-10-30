@@ -173,7 +173,7 @@ class WuerstchenModel(BaseModel):
                + ([self.embedding] if self.embedding is not None else [])
 
     def all_prior_text_encoder_embeddings(self) -> list[BaseModelEmbedding]:
-        return [embedding.text_encoder_embedding for embedding in self.additional_embeddings] \
+        return [embedding.prior_text_encoder_embedding for embedding in self.additional_embeddings] \
                + ([self.embedding.prior_text_encoder_embedding] if self.embedding is not None else [])
 
     def materialize(self, *parts: str):

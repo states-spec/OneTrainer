@@ -268,8 +268,11 @@ class TrainUIController:
             on_update_status=self.on_update_status,
         )
 
-        trainer = create.create_trainer(self.train_config, self.training_callbacks, self.training_commands, reattach=self.view.get_cloud_reattach())
+        trainer = None
         try:
+            # in the try: a trainer that couldn't be created (e.g. a workspace folder that can't be made) ended the
+            # thread here, and the UI stayed on "Stop Training" until it was restarted
+            trainer = create.create_trainer(self.train_config, self.training_callbacks, self.training_commands, reattach=self.view.get_cloud_reattach())
             trainer.start()
             if self.train_config.cloud.enabled:
                 self.view.sync_cloud_secrets()
@@ -290,7 +293,13 @@ class TrainUIController:
             if self.train_config.debug_mode or os.environ.get("OT_DEBUG_PROFILES") == "1":
                 print_fragmentation("training run, at stop")
 
-        trainer.end()
+        if trainer is not None:
+            try:
+                trainer.end()
+            except Exception:
+                # e.g. the final save on a full disk: the UI has to get back to idle either way
+                error_caught = True
+                traceback.print_exc()
 
         # clear gpu memory
         del trainer

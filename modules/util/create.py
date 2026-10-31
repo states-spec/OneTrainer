@@ -133,6 +133,16 @@ def _adv_orthograd_mode(value) -> str:
     return value if value is not None else "disabled"
 
 
+def _bnb_lars_on_momentum_kernels(optimizer):
+    # bitsandbytes' LARS is SGD with momentum whose update is limited to max_unorm times the weight norm, run on
+    # momentum's kernels. bitsandbytes 0.49 has no "lars" entry in its 32-bit kernel table (its 8-bit table still maps
+    # "lars" to momentum's kernels, as older releases did for both), so every step on 32-bit state raised "Unsupported
+    # optimizer name: lars": all of LARS, and LARS_8BIT's tensors smaller than min_8bit_size. Momentum's name selects
+    # the same kernels on every path. bitsandbytes doesn't save the name with the optimizer state.
+    optimizer.optimizer_name = "momentum"
+    return optimizer
+
+
 def _adv_state_precision(optimizer: Optimizer, state_precision: str | None, name: str = "state_precision") -> str:
     from modules.util.optimizer_util import adv_state_precisions
     state_precision = state_precision.lower() if state_precision is not None else "auto"
@@ -570,7 +580,7 @@ def create_optimizer(
         # LARS Optimizer
         case Optimizer.LARS:
             import bitsandbytes as bnb
-            optimizer = bnb.optim.LARS(
+            optimizer = _bnb_lars_on_momentum_kernels(bnb.optim.LARS(
                 params=parameters,
                 lr=config.learning_rate,
                 weight_decay=optimizer_config.weight_decay if optimizer_config.weight_decay is not None else 0,
@@ -578,12 +588,12 @@ def create_optimizer(
                 dampening=optimizer_config.dampening if optimizer_config.dampening is not None else 0,
                 nesterov=optimizer_config.nesterov if optimizer_config.nesterov is not None else False,
                 max_unorm=optimizer_config.max_unorm if optimizer_config.max_unorm is not None else 0.02,
-            )
+            ))
 
         # LARS_8BIT Optimizer
         case Optimizer.LARS_8BIT:
             import bitsandbytes as bnb
-            optimizer = bnb.optim.LARS8bit(
+            optimizer = _bnb_lars_on_momentum_kernels(bnb.optim.LARS8bit(
                 params=parameters,
                 lr=config.learning_rate,
                 weight_decay=optimizer_config.weight_decay if optimizer_config.weight_decay is not None else 0,
@@ -593,7 +603,7 @@ def create_optimizer(
                 min_8bit_size=optimizer_config.min_8bit_size if optimizer_config.min_8bit_size is not None else 4096,
                 percentile_clipping=optimizer_config.percentile_clipping if optimizer_config.percentile_clipping is not None else 100,
                 max_unorm=optimizer_config.max_unorm if optimizer_config.max_unorm is not None else 0.02,
-            )
+            ))
 
         # LAMB Optimizer
         case Optimizer.LAMB:

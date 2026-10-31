@@ -8,6 +8,10 @@ Every VAE (SD1.5 to Flux/Chroma) has one 512-wide attention head in its middle b
 cached and every image decoded on such a GPU was wrong (the Flux/Chroma ae.safetensors latent by 9%, a randomly
 initialized VAE's by 25-40%).
 
+AOTriton 0.14 (AMD's ROCm 10.1 builds of torch 2.13) ships no gfx110x forward kernels above head size 256, but
+PyTorch still picks flash or memory-efficient attention there, so the same call fails with a HIP error ("profiler is not
+initialized" on an RX 7900 XTX) instead of returning wrong numbers. The math kernel avoids that too.
+
 install() replaces torch.nn.functional.scaled_dot_product_attention, which diffusers and transformers look up on
 every call. Other calls go straight to PyTorch's function.
 """

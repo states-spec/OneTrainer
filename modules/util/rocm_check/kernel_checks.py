@@ -322,6 +322,14 @@ def sdpa_correctness(ctx: Ctx, rec: Rec):
                                 or "not supported" in str(e).lower():
                             results.append(f"{bname} n/a")
                             continue
+                        if backend is not None and d > rocm_sdpa_fix.MAX_HEAD_DIM and fix_applies:
+                            # AOTriton 0.14 (the ROCm 10.1 builds) ships no gfx110x kernels above head size 256, but
+                            # PyTorch still picks them: the call fails instead of giving wrong numbers as 0.12b's did
+                            rec.warn(f"hd {d} {DTYPE_NAME[dtype]} {mask_name} {bname}: {type(e).__name__}: "
+                                     f"{(str(e).splitlines() or [''])[0]} (PyTorch bug; OneTrainer uses the math "
+                                     f"kernel here)")
+                            results.append(f"{bname} error")
+                            continue
                         raise
                     valid = rows_valid.expand_as(out).to(ctx.device)
                     err_out = rel_err(out[valid], ref[valid.cpu()])

@@ -730,7 +730,7 @@ def vae_layers(ctx: Ctx, rec: Rec):
                 else:
                     out["r"] = _encode_with_layer_errors(vae, img_d, reference)
             except Exception as e:
-                out["e"] = f"{type(e).__name__}: {e}"
+                out["e"] = f"{type(e).__name__}: {(str(e).splitlines() or [''])[0]}"
 
         torch.backends.cudnn.enabled = miopen
         fix_was_installed = rocm_sdpa_fix.installed()
@@ -747,8 +747,11 @@ def vae_layers(ctx: Ctx, rec: Rec):
             torch.backends.cudnn.enabled = miopen_default
             if fix_was_installed:
                 rocm_sdpa_fix.install()
+        # without the fix, PyTorch's own kernel at head size 512 gives wrong numbers (AOTriton 0.12b) or fails
+        # (AOTriton 0.14, which has no gfx110x kernels above 256): both are the known bug
+        report = rec.warn if not sdpa_fix and rocm_sdpa_fix.applies_to(ctx.device) else rec.fail
         if "e" in out:
-            rec.fail(f"{label}: {out['e']}")
+            report(f"{label}: {out['e']}")
             return None
         records, latent = out["r"]
         final = rel_err(latent, ref_latent)
@@ -758,7 +761,6 @@ def vae_layers(ctx: Ctx, rec: Rec):
             return True
         name, kind, err, is_finite = bad[0] if bad else ("(none)", "", final, True)
         types = sorted({r[1] for r in bad})
-        report = rec.warn if not sdpa_fix and rocm_sdpa_fix.applies_to(ctx.device) else rec.fail
         report(f"{label}: latent rel err {final:.2e}; first wrong layer {name} ({kind}): "
                  f"{'NaN/inf' if not is_finite else f'rel err {err:.2e}'}; wrong layer types: {', '.join(types)}")
         return False

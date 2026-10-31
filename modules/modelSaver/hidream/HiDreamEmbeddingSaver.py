@@ -36,7 +36,7 @@ class HiDreamEmbeddingSaver(
             if embedding.text_encoder_1_embedding.output_vector is not None:
                 state_dict["clip_l_out"] = embedding.text_encoder_1_embedding.output_vector.to(device="cpu", dtype=dtype)
             if embedding.text_encoder_2_embedding.output_vector is not None:
-                state_dict["t5_out"] = embedding.text_encoder_2_embedding.output_vector.to(device="cpu", dtype=dtype)
+                state_dict["clip_g_out"] = embedding.text_encoder_2_embedding.output_vector.to(device="cpu", dtype=dtype)
             if embedding.text_encoder_3_embedding.output_vector is not None:
                 state_dict["t5_out"] = embedding.text_encoder_3_embedding.output_vector.to(device="cpu", dtype=dtype)
             if embedding.text_encoder_4_embedding.output_vector is not None:

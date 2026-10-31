@@ -406,7 +406,7 @@ class HFModelLoaderMixin(metaclass=ABCMeta):
         is_sharded = full_shard_index_filename is not None
 
         if is_sharded:
-            with open(full_shard_index_filename, "r") as f:
+            with open(full_shard_index_filename, "r", encoding="utf-8") as f:
                 index_file = json.loads(f.read())
                 safetensors_filenames = sorted(set(index_file["weight_map"].values()))
         else:
@@ -642,7 +642,7 @@ class HFModelLoaderMixin(metaclass=ABCMeta):
 
         index_path = resolve(shard_index_filename)
         if index_path is not None:
-            with open(index_path, "r") as f:
+            with open(index_path, "r", encoding="utf-8") as f:
                 weight_map = json.loads(f.read())["weight_map"]
             shard_paths = {shard: resolve(shard) for shard in set(weight_map.values())}
             for key, shard in weight_map.items():

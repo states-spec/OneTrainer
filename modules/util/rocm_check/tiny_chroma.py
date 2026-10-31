@@ -20,7 +20,7 @@ def _tokenizer(path: str, tmp: str):
 
     corpus = os.path.join(tmp, "corpus.txt")
     rng = random.Random(0)
-    with open(corpus, "w") as f:
+    with open(corpus, "w", encoding="utf-8") as f:
         for _ in range(2000):
             f.write(" ".join(rng.choice(_WORDS) for _ in range(rng.randint(3, 12))) + "\n")
     prefix = os.path.join(tmp, "spiece")
@@ -70,7 +70,7 @@ def build_tiny_chroma(path: str, seed: int = 0) -> str:
         approximator_num_channels=16, approximator_hidden_dim=64, approximator_layers=2,
     ).save_pretrained(os.path.join(path, "transformer"), safe_serialization=True)
 
-    with open(os.path.join(path, "model_index.json"), "w") as f:
+    with open(os.path.join(path, "model_index.json"), "w", encoding="utf-8") as f:
         json.dump({
             "_class_name": "ChromaPipeline",
             "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
@@ -101,6 +101,6 @@ def build_dataset(path: str, count: int = 6, size: int = 256, seed: int = 0) -> 
         mask = Image.new("L", (w, h), 0)
         ImageDraw.Draw(mask).rectangle((w // 8, h // 8, 7 * w // 8, 7 * h // 8), fill=255)
         mask.save(os.path.join(path, f"img{i}-masklabel.png"))
-        with open(os.path.join(path, f"img{i}.txt"), "w") as f:
+        with open(os.path.join(path, f"img{i}.txt"), "w", encoding="utf-8") as f:
             f.write(" ".join(rng.choice(_WORDS) for _ in range(rng.randint(4, 10))))
     return path

@@ -82,6 +82,36 @@ def init_concept_stats(advanced_checks : bool):
 
     return stats_dict
 
+def images_without_mask(concepts: list[ConceptConfig], allow_videos: bool) -> list[tuple[ConceptConfig, int, int, list[str]]]:
+    # (concept, images without a mask, images, a few of their paths) per enabled concept folder, the images collected
+    # as training collects them (mgds CollectPaths + ModifyPath in DataLoaderText2ImageMixin): masked training gives an
+    # image without <image stem>-masklabel.png an all-white mask, i.e. trains it on the whole image
+    extensions = path_util.supported_image_extensions() \
+        | (path_util.supported_video_extensions() if allow_videos else set())
+    result = []
+    for concept in concepts:
+        if not concept.enabled or not os.path.isdir(concept.path):
+            continue  # a Hugging Face dataset, or a path the data loader reports
+        missing, total, examples = 0, 0, []
+        for root, dirs, files in os.walk(concept.path, followlinks=True):
+            if concept.include_subdirectories:
+                dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
+            else:
+                dirs.clear()
+            for name in sorted(files):
+                stem, extension = os.path.splitext(name)
+                if extension.lower() not in extensions or stem.endswith(("-masklabel", "-condlabel")):
+                    continue
+                total += 1
+                if not os.path.isfile(os.path.join(root, stem + "-masklabel.png")):
+                    missing += 1
+                    if len(examples) < 3:
+                        examples.append(os.path.relpath(os.path.join(root, name), concept.path))
+        if missing:
+            result.append((concept, missing, total, examples))
+    return result
+
+
 def _image_size(path: str) -> tuple[int, int]:
     # imagesize is fast but knows fewer formats; PIL reads the rest. (0, 0) for a file neither can read
     try:

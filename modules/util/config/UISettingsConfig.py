@@ -47,7 +47,7 @@ class UISettingsConfig(BaseConfig):
     def load(path: str = UI_SETTINGS_PATH) -> 'UISettingsConfig':
         settings = UISettingsConfig.default_values()
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 settings.from_dict(json.load(f))
         except FileNotFoundError:
             pass

@@ -1050,9 +1050,9 @@ class TrainConfig(BaseConfig):
             text_encoder_4=self.text_encoder_4.model_name,
             vae_model=self.vae.model_name,
             lora=self.lora_model_name,
-            embedding=EmbeddingName(self.embedding.uuid, self.embedding.model_name) \
+            embedding=EmbeddingName(self.embedding.uuid, self.embedding.model_name, self.embedding.placeholder) \
                 if self.training_method == TrainingMethod.EMBEDDING else None,
-            additional_embeddings=[EmbeddingName(embedding.uuid, embedding.model_name) for embedding in
+            additional_embeddings=[EmbeddingName(embedding.uuid, embedding.model_name, embedding.placeholder) for embedding in
                                    self.additional_embeddings],
             include_text_encoder=self.text_encoder.include,
             include_text_encoder_2=self.text_encoder_2.include,
@@ -1150,11 +1150,49 @@ class TrainConfig(BaseConfig):
         # a backup writes its meta.json last (InternalModelSaverMixin), so a folder without it was cut off, e.g. by a
         # crash while it was written. Resuming it loaded at most the weights, without the optimizer state and progress
         for backup_path in self.get_backup_paths():
-            if os.path.isfile(os.path.join(backup_path, "meta.json")):
-                return backup_path
-            print(f"Skipping the incomplete backup '{backup_path}' (no meta.json: it was not finished, e.g. because "
-                  f"of a crash while it was written)")
+            if not os.path.isfile(os.path.join(backup_path, "meta.json")):
+                print(f"Skipping the incomplete backup '{backup_path}' (no meta.json: it was not finished, e.g. "
+                      f"because of a crash while it was written)")
+                continue
+            # the newest backup in the workspace can come from any earlier run, also one with another model or method
+            mismatch = self._backup_mismatch(self._backup_settings(backup_path))
+            if mismatch:
+                print(f"Skipping the backup '{backup_path}': it was made with {mismatch}")
+                continue
+            return backup_path
         return None
+
+    @staticmethod
+    def _backup_settings(backup_path: str) -> dict:
+        # the config the backup was made with (GenericTrainer.__save_backup_config); empty for backups without it
+        try:
+            with open(os.path.join(backup_path, "onetrainer_config", "args.json"), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _backup_mismatch(self, settings: dict) -> str | None:
+        # the settings that keep a backup from loading into this config: another model type, training method or adapter
+        expected = [("model_type", self.model_type), ("training_method", self.training_method)]
+        if self.training_method == TrainingMethod.LORA:
+            expected.append(("peft_type", self.peft_type))
+        different = [f"{key} {settings[key]} (this run: {value})" for key, value in expected
+                     if key in settings and str(settings[key]) != str(value)]
+        return ", ".join(different) or None
+
+    def describe_backup(self, backup_path: str) -> str:
+        # which run made the backup and how far it was, for the "Continuing training from backup" message
+        parts = []
+        run_name = self._backup_settings(backup_path).get("run_name")
+        if run_name:
+            parts.append(f"run '{run_name}'")
+        try:
+            with open(os.path.join(backup_path, "meta.json"), "r", encoding="utf-8") as f:
+                progress = json.load(f)["train_progress"]
+            parts.append(f"step {progress['global_step']}, epoch {progress['epoch']}")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return ", ".join(parts)
 
     def to_settings_dict(self, secrets: bool) -> dict:
         config = TrainConfig.default_values().from_dict(self.to_dict())
@@ -1171,14 +1209,14 @@ class TrainConfig(BaseConfig):
         config = TrainConfig.default_values().from_dict(self.to_dict())
 
         if config.concepts is None:
-            with open(config.concept_file_name, 'r') as f:
+            with open(config.concept_file_name, 'r', encoding="utf-8") as f:
                 concepts = json.load(f)
                 for i in range(len(concepts)):
                     concepts[i] = ConceptConfig.default_values().from_dict(concepts[i])
                 config.concepts = concepts
 
         if config.samples is None:
-            with open(config.sample_definition_file_name, 'r') as f:
+            with open(config.sample_definition_file_name, 'r', encoding="utf-8") as f:
                 samples = json.load(f)
                 for i in range(len(samples)):
                     samples[i] = SampleConfig.default_values(config.model_type).from_dict(samples[i])

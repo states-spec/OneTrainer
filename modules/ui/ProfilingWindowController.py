@@ -15,7 +15,7 @@ class ProfilingWindowController:
     def dump_stack(self):
         path = path_util.diagnostics_path('stacks.txt')
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             faulthandler.dump_traceback(f)
         self.view.set_message(f'Stack dumped to {path}')
 

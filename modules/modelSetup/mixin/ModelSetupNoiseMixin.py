@@ -209,6 +209,19 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
 
         return noisy_latent, target_noise
 
+    @staticmethod
+    def _valid_timestep_weights(weights: Tensor, config: TrainConfig, shift: float) -> Tensor:
+        # torch.multinomial needs finite, non-negative weights with a positive sum. The CPU raises "invalid multinomial
+        # distribution"; the GPU checks it inside the kernel for batches above 1, a device-side assert that aborts the
+        # process under ROCm. E.g. INVERTED_PARABOLA with its peak far outside 0..1 has no weight left anywhere.
+        if not bool(torch.isfinite(weights).all()) or float(weights.min()) < 0 or float(weights.sum()) <= 0:
+            raise ValueError(
+                f"The {config.timestep_distribution} timestep distribution gives no valid timestep weights with noising "
+                f"weight {config.noising_weight}, noising bias {config.noising_bias} and timestep shift {shift}: every "
+                f"timestep's weight is 0, negative or not a number. Change them in the timestep distribution window."
+            )
+        return weights
+
     def _get_timestep_discrete(
             self,
             num_train_timesteps: int,
@@ -301,6 +314,14 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
                         timestep = u * num_timestep + min_timestep
 
                 timestep = num_train_timesteps * shift * timestep / ((shift - 1) * timestep + num_train_timesteps)
+                # num_train_timesteps is one past the last entry of the noise schedule, but these can reach it: sigmoid
+                # rounds to exactly 1 above ~16.6 (LOGIT_NORMAL, 2% of the samples at noising weight 7.7), HEAVY_TAIL
+                # and BETA give 1 for u = 0, and the shift can round up to it. The schedule lookup then indexed out of
+                # bounds: an IndexError on the CPU, a device-side assert on the GPU, which aborts the process under
+                # ROCm. HEAVY_TAIL leaves 0..1 on both sides (symmetrically) for noising weights below -1 or above ~7.2;
+                # a negative timestep indexed the schedule from its end. Every value inside the schedule truncates to
+                # the same timestep as before.
+                timestep = timestep.clamp(0, num_train_timesteps - 1)
             else:
                 # Shifting a discrete distribution is done in two steps:
                 # 1. Apply the inverse shift to the linspace.
@@ -319,7 +340,7 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
                     if self.__weights is None:
                         weights = 2.0 / (math.pi - 2.0 * math.pi * linspace + 2.0 * math.pi * linspace ** 2.0)
                         weights *= linspace_derivative
-                        self.__weights = weights.to(device=generator.device)
+                        self.__weights = self._valid_timestep_weights(weights, config, shift).to(device=generator.device)
                 elif config.timestep_distribution == TimestepDistribution.SIGMOID:
                     if self.__weights is None:
                         bias = config.noising_bias + 0.5
@@ -328,7 +349,7 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
                         weights = linspace / (shift - shift * linspace + linspace)
                         weights = 1 / (1 + torch.exp(-weight * (weights - bias)))  # Sigmoid
                         weights *= linspace_derivative
-                        self.__weights = weights.to(device=generator.device)
+                        self.__weights = self._valid_timestep_weights(weights, config, shift).to(device=generator.device)
                 elif config.timestep_distribution == TimestepDistribution.INVERTED_PARABOLA:
                     if self.__weights is None:
                         bias = config.noising_bias + 0.5
@@ -336,7 +357,7 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
 
                         weights = torch.clamp(-weight * ((linspace - bias) ** 2) + 2, min=0.0)
                         weights *= linspace_derivative
-                        self.__weights = weights.to(device=generator.device)
+                        self.__weights = self._valid_timestep_weights(weights, config, shift).to(device=generator.device)
                 samples = torch.multinomial(self.__weights, num_samples=batch_size, replacement=True, generator=generator) + min_timestep
                 timestep = samples.to(dtype=torch.long, device=generator.device)
 

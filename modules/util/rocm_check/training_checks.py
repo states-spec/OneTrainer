@@ -4,6 +4,7 @@ VAE encodes (the ROCm NaN-latent bug the caching lock works around).
 """
 import copy
 import io
+import itertools
 import os
 import threading
 import time
@@ -129,7 +130,7 @@ class _OptimizerRun:
 
     SHAPES = [(16, 512), (512, 16), (512, 1), (512,)]
 
-    def __init__(self, ctx: Ctx, optimizer, precision, device, dtype, params=None, state_dict=None):
+    def __init__(self, ctx: Ctx, optimizer, precision, device, dtype, params=None, state_dict=None, overrides=None):
         from modules.util import create
         from modules.util.config.TrainConfig import TrainConfig
         from modules.util.NamedParameterGroup import NamedParameterGroup, NamedParameterGroupCollection
@@ -141,6 +142,8 @@ class _OptimizerRun:
         config.optimizer = default_optimizer_config(optimizer)
         if precision is not None:
             config.optimizer.state_precision = precision
+        for key, value in (overrides or {}).items():
+            setattr(config.optimizer, key, value)
         config.learning_rate = 1.0 if "PRODIGY" in str(optimizer) else 1e-3
         config.learning_rate_warmup_steps = 0
         config.train_device = str(device)
@@ -163,8 +166,13 @@ class _OptimizerRun:
     def saved_state(self) -> dict:
         # like InternalModelSaverMixin: the extra keys, then a torch.save / torch.load round trip
         state = self.opt.state_dict()
-        state["param_group_mapping"] = self.collection.unique_name_mapping
-        state["param_group_optimizer_mapping"] = [str(self.optimizer_enum)]
+        if any('optim_type' in group for group in self.opt.param_groups):
+            # Muon's groups, named as optimizer_util.init_model_parameters names them for the saver
+            state["param_group_mapping"] = [f"{group.get('name')}_{group.get('optim_type', 'unknown')}"
+                                            for group in self.opt.param_groups]
+        else:
+            state["param_group_mapping"] = self.collection.unique_name_mapping
+        state["param_group_optimizer_mapping"] = [str(self.optimizer_enum)] * len(state["param_group_mapping"])
         if self.optimizer_enum.is_adv_optm:
             import adv_optm
             state["adv_optm_version"] = getattr(adv_optm, "__version__", "unknown")
@@ -232,6 +240,98 @@ def optimizers(ctx: Ctx, rec: Rec):
                 continue
             diff = max(rel_err(a, b) for a, b in zip(runs["cuda"], runs["cpu"], strict=True))
             rec.expect(diff < 1e-3, f"{label_opt} fp32: GPU vs CPU after 6 steps rel diff {diff:.1e} (limit 1e-3)")
+
+
+# optimizers backed by bitsandbytes, even 32-bit (create.py); its optimizers run only on the GPU
+_BNB_OPTIMIZERS = ("ADAGRAD", "RMSPROP", "LARS", "LAMB", "AdEMAMix")
+
+
+@check(SECTION, "every optimizer with its UI defaults: create, step, save/resume, fused back pass (create_optimizer)")
+def all_optimizers(ctx: Ctx, rec: Rec):
+    from modules.util.enum.Optimizer import Optimizer
+
+    # 2D parameters only, as a LoRA has: Muon and AdaMuon without the auxiliary Adam refuse 1D ones
+    shapes = [(16, 64), (64, 16), (64, 1)]
+    names = []
+    for optimizer in Optimizer:
+        if (optimizer.name.endswith("8BIT") or optimizer.name in _BNB_OPTIMIZERS) and not ctx.is_gpu:
+            names.append(f"{optimizer} (bitsandbytes, GPU only: not run)")
+            continue
+        params = [_rand(ctx, *shape, scale=0.1, seed=40 + i) for i, shape in enumerate(shapes)]
+        try:
+            run = _OptimizerRun(ctx, optimizer, None, ctx.device, torch.float32, params=params)
+            for i in range(3):
+                run.step(i)
+            resumed = _OptimizerRun(ctx, optimizer, None, ctx.device, torch.float32, params=run.params,
+                                    state_dict=run.saved_state())
+            for i in range(3, 6):
+                run.step(i)
+                resumed.step(i)
+            w, w_resumed = run.weights(), resumed.weights()
+            if not all(finite(t) for t in w + w_resumed):
+                rec.fail(f"{optimizer}: NaN/inf in the weights")
+                continue
+            diff = max(rel_err(a, b) for a, b in zip(w_resumed, w, strict=True))
+            moved = max(rel_err(a, b.to(a.device)) for a, b in zip(w, params, strict=True))
+            if moved == 0:
+                rec.fail(f"{optimizer}: 6 steps left the weights unchanged")
+                continue
+            if diff > 1e-5:
+                # a state that save/load doesn't restore exactly; not always wrong (e.g. state outside state_dict)
+                rec.warn(f"{optimizer}: the resumed run differs from the uninterrupted one by rel {diff:.1e}")
+            text = f"{optimizer}: moved rel {moved:.1e} in 6 steps, resume diff {diff:.1e}"
+            if optimizer.supports_fused_back_pass():
+                # ADAM/ADAMW step parameters one at a time only with their plain implementation
+                fused = _OptimizerRun(ctx, optimizer, None, ctx.device, torch.float32, params=params,
+                                      overrides={"fused_back_pass": True, "fused": False, "foreach": False})
+                for i in range(2):
+                    for group in fused.opt.param_groups:
+                        for j, p in enumerate(group["params"]):
+                            p.grad = _rand(ctx, *p.shape, seed=2000 * i + j).to(ctx.device)
+                            fused.opt.step_parameter(p, group, j)
+                            p.grad = None
+                if not all(finite(t) for t in fused.weights()):
+                    rec.fail(f"{optimizer}: fused back pass gave NaN/inf weights")
+                    continue
+                text += ", fused back pass ok"
+            names.append(text)
+        except Exception as e:
+            rec.fail(f"{optimizer}: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
+    for text in names:
+        rec.line(text)
+
+
+@check(SECTION, "timestep sampling stays inside the noise schedule (every distribution, wide settings, shifts)")
+def timestep_range(ctx: Ctx, rec: Rec):
+    from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+    from modules.util.config.TrainConfig import TrainConfig
+    from modules.util.enum.TimestepDistribution import TimestepDistribution
+
+    # The sampled timestep indexes the noise schedule, and wide settings reach its end: LOGIT_NORMAL at the Chroma
+    # presets' noising weight 7.7 drew num_train_timesteps itself for 2% of the samples, one past the last entry (a
+    # device-side assert on the GPU, which aborted the training run under ROCm). The samples are only compared here,
+    # never used as an index, so a regression fails this check instead of ending rocm_check.
+    settings = [(0.0, 0.0), (3.0, 1.0), (7.7, 0.0), (20.0, -2.0), (1.0, 0.5), (0.5, 1.0)]
+    sampled, refused = 0, []
+    for distribution, (weight, bias), shift in itertools.product(TimestepDistribution, settings, (1.0, 3.0)):
+        config = TrainConfig.default_values()
+        config.timestep_distribution, config.noising_weight, config.noising_bias = distribution, weight, bias
+        config.timestep_shift = shift
+        for n in (1000, 10000):  # 10000: the continuous models' discretization (_get_timestep_continuous)
+            sampler = type("Sampler", (ModelSetupNoiseMixin,), {})()  # a fresh one: the discrete ones cache weights
+            generator = torch.Generator(device=ctx.device).manual_seed(ctx.seed + sampled)
+            try:
+                timestep = sampler._get_timestep_discrete(n, False, generator, 16384, config)
+            except ValueError:  # no valid weights (INVERTED_PARABOLA with its peak far outside): refused with a message
+                refused.append(f"{distribution} {weight}/{bias}/{shift}")
+                continue
+            sampled += 1
+            low, high = int(timestep.min()), int(timestep.max())
+            if low < 0 or high >= n:
+                rec.fail(f"{distribution}, noising weight {weight}, bias {bias}, shift {shift}: timesteps {low}..{high}, "
+                         f"outside the schedule's 0..{n - 1}")
+    rec.line(f"{sampled} settings x 16384 samples on {ctx.device}; refused for having no valid weights: "
+             f"{', '.join(sorted(set(refused))) or 'none'}")
 
 
 class _Block(nn.Module):

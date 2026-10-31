@@ -12,7 +12,7 @@ def _private_ram_bytes() -> int:
     # disk-offload path.
     if platform.system() == 'Linux':
         # RssAnon from /proc; reported in KiB.
-        with open("/proc/self/status") as f:
+        with open("/proc/self/status", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("RssAnon:"):
                     return int(line.split()[1]) * 1024

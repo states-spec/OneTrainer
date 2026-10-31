@@ -25,8 +25,8 @@ def main():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                         help="device to test (default: cuda if available, else cpu)")
     parser.add_argument("--full", action="store_true",
-                        help="more dtypes, sizes, optimizers and repeats, plus TunableOp and torch.compile "
-                             "(about 30-45 minutes instead of about 5)")
+                        help="more dtypes, sizes, optimizers and repeats, plus TunableOp, torch.compile and the "
+                             "training features (about 45-60 minutes instead of about 5)")
     parser.add_argument("--resolutions", type=int, nargs="+", default=[512, 1024],
                         help="training resolutions the speed checks size their tensors for (default: 512 1024)")
     parser.add_argument("--out-dir", default=path_util.diagnostics_path("rocm_check"),

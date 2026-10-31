@@ -86,7 +86,7 @@ class TopBarController:
         for root, _, files in os.walk(dir):
             for name in files:
                 if name.startswith("#") and name != "#.json" and name.endswith(".json"):
-                    with suppress(Exception), open(os.path.join(root, name), "r") as f:
+                    with suppress(Exception), open(os.path.join(root, name), "r", encoding="utf-8") as f:
                         presets.append(json.load(f))
         return presets
 
@@ -165,7 +165,7 @@ class TopBarController:
             basename = os.path.basename(filename)
             is_built_in_preset = basename.startswith("#") and basename != "#.json"
 
-            with open(filename, "r") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 loaded_dict = json.load(f)
             # built-in configs are always saved in the most recent version, so migration can be skipped
             migrate = not is_built_in_preset
@@ -177,7 +177,7 @@ class TopBarController:
             default_config.optimizer = default_optimizer_config(loaded_config.optimizer.optimizer)
             loaded_config = default_config.from_dict(copy.deepcopy(loaded_dict), migrate=migrate).to_unpacked_config()
 
-            with suppress(FileNotFoundError), open("secrets.json", "r") as f:
+            with suppress(FileNotFoundError), open("secrets.json", "r", encoding="utf-8") as f:
                 secrets_dict = json.load(f)
                 loaded_config.secrets = SecretsConfig.default_values().from_dict(secrets_dict)
 

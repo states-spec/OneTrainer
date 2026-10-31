@@ -64,7 +64,7 @@ def cache_settings(config: TrainConfig) -> dict:
 def changed_cache_settings(config: TrainConfig) -> list[str] | None:
     # the settings that differ from the ones the cache in cache_dir was made with, None if there is no record
     try:
-        with open(os.path.join(config.cache_dir, CACHE_SETTINGS_FILE), "r") as f:
+        with open(os.path.join(config.cache_dir, CACHE_SETTINGS_FILE), "r", encoding="utf-8") as f:
             cached = json.load(f)
     except (OSError, ValueError):
         return None

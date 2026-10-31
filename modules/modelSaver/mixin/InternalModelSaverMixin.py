@@ -35,7 +35,7 @@ class InternalModelSaverMixin(metaclass=ABCMeta):
             torch.save(model.ema.state_dict(), os.path.join(destination, "ema", "ema.pt"))
 
         # meta
-        with open(os.path.join(destination, "meta.json"), "w") as meta_file:
+        with open(os.path.join(destination, "meta.json"), "w", encoding="utf-8") as meta_file:
             json.dump({
                 'train_progress': {
                     'epoch': model.train_progress.epoch,

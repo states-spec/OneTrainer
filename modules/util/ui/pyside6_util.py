@@ -179,13 +179,19 @@ def create_application() -> QApplication:
     if sys.platform.startswith("linux") and not settings.system_file_dialogs \
             and "QT_QPA_PLATFORMTHEME" not in os.environ and _gtk_based_desktop():
         os.environ["QT_QPA_PLATFORMTHEME"] = "gnome"
-    # On desktops without the xdg-desktop-portal Settings interface, Qt spams two
-    # "qt.qpa.theme.gnome: dbus reply error ... org.freedesktop.portal.Settings"
-    # lines while probing for the system color scheme. Silence just that category;
-    # the rules string is read when Qt's logging initializes at QApplication init.
-    _gnome_theme_rule = "qt.qpa.theme.gnome=false"
-    existing_rules = os.environ.get("QT_LOGGING_RULES")
-    os.environ["QT_LOGGING_RULES"] = f"{existing_rules};{_gnome_theme_rule}" if existing_rules else _gnome_theme_rule
+    # Qt messages that tell a user nothing they could act on (OT_DEBUG_WARNINGS shows them). Qt reads the rules when
+    # its logging initializes at QApplication init; rules already in QT_LOGGING_RULES come after these, so they win.
+    # - qt.qpa.theme.gnome: on desktops without the xdg-desktop-portal Settings interface, two "dbus reply error ...
+    #   org.freedesktop.portal.Settings" lines while Qt probes for the system color scheme.
+    # - qt.qpa.wayland.textinput warnings: in GNOME's Wayland session, a popup or window that has the text-input focus
+    #   gets destroyed (a dropdown rebuilt by its own pick, the optimizer window closing), and GNOME's leave event then
+    #   names a surface Qt has freed: "zwp_text_input_v3_leave ... Got leave event for surface 0x0". Qt handles the
+    #   event normally; from 6.11.2 on it doesn't print it (PySide6 is pinned to 6.11.1).
+    if not os.environ.get("OT_DEBUG_WARNINGS"):
+        rules = ["qt.qpa.theme.gnome=false", "qt.qpa.wayland.textinput.warning=false"]
+        if os.environ.get("QT_LOGGING_RULES"):
+            rules.append(os.environ["QT_LOGGING_RULES"])
+        os.environ["QT_LOGGING_RULES"] = ";".join(rules)
 
     app = QApplication(sys.argv)
     # QApplication initializes the C locale from the environment (setlocale(LC_ALL, "")), which sets LC_NUMERIC

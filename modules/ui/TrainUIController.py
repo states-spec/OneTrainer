@@ -226,7 +226,7 @@ class TrainUIController:
             train_commands.save()
 
     def export_training(self, file_path: str):
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump(self.train_config.to_pack_dict(secrets=False), f, indent=4)
 
     def generate_debug_package(self, zip_path: Path):

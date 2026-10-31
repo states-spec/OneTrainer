@@ -174,6 +174,38 @@ def finite(t: torch.Tensor) -> bool:
     return bool(torch.isfinite(t).all().item())
 
 
+def output_tail(output: str, lines: int = 6) -> str:
+    """the end of a process's output, for a report line. A crash in native code ends with faulthandler's report (every
+    thread's stack, then the extension modules loaded), whose last lines say nothing: for one, the runtime's message
+    before it (a failed assert in a GPU kernel, a HIP/HSA error, an uncaught C++ exception) and where the threads
+    were (each one's innermost OneTrainer frame, else its innermost frame) instead"""
+    text = [line.strip() for line in output.splitlines() if line.strip()]
+    fatal = next((i for i, line in enumerate(text) if line.startswith("Fatal Python error")), None)
+    if fatal is None:
+        return " | ".join(text[-lines:])[-600:]
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))) + os.sep
+    # a kernel's failed assert is printed through the device printf (stdout), the runtime's own errors go to stderr
+    markers = ("ssertion", "HSA_STATUS", "Memory access fault", "HIP error", "CUDA error", "terminate called", "what():")
+    runtime = [line[:300] for line in text[:fatal] if any(marker in line for marker in markers)][-3:]
+    parts = (runtime or [line[:300] for line in text[max(0, fatal - 2):fatal]]) + [text[fatal]]
+    frames = []
+    for i, line in enumerate(text[fatal + 1:], fatal + 1):
+        if line.startswith(("Thread 0x", "Current thread 0x")):
+            stack = []
+            for frame in text[i + 1:]:
+                if not frame.startswith("File "):
+                    break
+                stack.append(frame)
+            ours = [frame for frame in stack if repo in frame]
+            if stack:
+                frames.append((not ours, not line.startswith("Current"), (ours or stack)[0].replace(repo, "")))
+    shown = []
+    for *_, frame in sorted(frames, key=lambda f: f[:2]):
+        if frame not in shown and len(shown) < 4:
+            shown.append(frame)
+    return " | ".join(parts + shown)[:900]
+
+
 def run_child(ctx: Ctx, task: str, env: dict[str, str | None], timeout: float = 900.0) -> dict:
     """runs one CHILD_TASKS entry in a fresh process with extra environment variables (None removes one), returns its
     result dict"""
@@ -194,8 +226,7 @@ def run_child(ctx: Ctx, task: str, env: dict[str, str | None], timeout: float = 
     for line in reversed(proc.stdout.splitlines()):
         if line.startswith(CHILD_RESULT_PREFIX):
             return json.loads(line[len(CHILD_RESULT_PREFIX):])
-    tail = (proc.stderr or proc.stdout).strip().splitlines()[-3:]
-    return {"error": f"exit code {proc.returncode}: " + " | ".join(tail)}
+    return {"error": f"exit code {proc.returncode}: " + output_tail(proc.stdout + proc.stderr, 3)}
 
 
 def child_main(task: str, ctx: Ctx):
@@ -226,9 +257,9 @@ class Report:
             "running_when_written": self.running,
             "results": self.results,
         }
-        with open(self.json_path, "w") as f:
+        with open(self.json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=1)
-        with open(self.txt_path, "w") as f:
+        with open(self.txt_path, "w", encoding="utf-8") as f:
             f.write(self.text())
 
     def text(self) -> str:

@@ -16,7 +16,7 @@ def main():
     _app = create_application()
 
     huggingface_token = ""
-    with suppress(FileNotFoundError), open("secrets.json", "r") as f:
+    with suppress(FileNotFoundError), open("secrets.json", "r", encoding="utf-8") as f:
         secrets_dict = json.load(f)
         huggingface_token = SecretsConfig.default_values().from_dict(secrets_dict).huggingface_token
 

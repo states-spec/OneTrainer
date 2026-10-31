@@ -20,7 +20,7 @@ class InternalModelLoaderMixin(metaclass=ABCMeta):
     ):
         if os.path.exists(os.path.join(model_name, "meta.json")):
             # train progress
-            with open(os.path.join(model_name, "meta.json"), "r") as meta_file:
+            with open(os.path.join(model_name, "meta.json"), "r", encoding="utf-8") as meta_file:
                 meta = json.load(meta_file)
                 train_progress = TrainProgress(
                     epoch=meta['train_progress']['epoch'],

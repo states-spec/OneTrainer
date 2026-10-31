@@ -24,6 +24,12 @@ def _decays(value: Callable[[str], Any]) -> bool:
     return _number(value('weight_decay')) > 0 or _number(value('centered_wd')) > 0
 
 
+def _plain_implementation(value: Callable[[str], Any]) -> bool:
+    # ADAM/ADAMW: torch's fused and foreach steps can't step one parameter at a time or round stochastically, and
+    # create_optimizer refuses either option together with them
+    return not _on(value('fused')) and not _on(value('foreach'))
+
+
 # settings that only take effect together with another one: the optimizer windows grey them out while it is off.
 # Only where the setting provably has no effect then (adv_optm 2.5.13-2.5.16)
 OPTION_DEPENDENCIES: dict[str, Callable[[Callable[[str], Any]], bool]] = {
@@ -36,6 +42,8 @@ OPTION_DEPENDENCIES: dict[str, Callable[[Callable[[str], Any]], bool]] = {
     'cautious_wd': _decays,
     'fisher_wd': _decays,
     'geometric_wd': _decays,
+    'fused_back_pass': _plain_implementation,
+    'stochastic_rounding': _plain_implementation,
 }
 
 
@@ -114,7 +122,7 @@ class BaseOptimizerParamsWindowView:
             'foreach': {'title': 'ForEach', 'tooltip': 'Whether to use a foreach implementation if available. This implementation is usually faster.', 'type': 'bool'},
             'fsdp_in_use': {'title': 'FSDP in Use', 'tooltip': 'Flag for using sharded parameters.', 'type': 'bool'},
             'fused': {'title': 'Fused', 'tooltip': 'Whether to use a fused implementation if available. This implementation is usually faster and requires less memory.', 'type': 'bool'},
-            'fused_back_pass': {'title': 'Fused Back Pass', 'tooltip': 'Whether to fuse the back propagation pass with the optimizer step. This reduces VRAM usage, but is not compatible with gradient accumulation. Clip Grad Norm then clips each parameter on its own instead of all gradients together.', 'type': 'bool'},
+            'fused_back_pass': {'title': 'Fused Back Pass', 'tooltip': 'Whether to fuse the back propagation pass with the optimizer step. This reduces VRAM usage, but is not compatible with gradient accumulation. Clip Grad Norm then clips each parameter on its own instead of all gradients together. ADAM and ADAMW need Fused and ForEach off for it.', 'type': 'bool'},
             'growth_rate': {'title': 'Growth Rate', 'tooltip': 'Limit for D estimate growth rate.', 'type': 'float'},
             'initial_accumulator_value': {'title': 'Initial Accumulator Value', 'tooltip': 'Initial value for Adagrad optimizer.', 'type': 'float'},
             'initial_accumulator': {'title': 'Initial Accumulator', 'tooltip': 'Sets the starting value for both moment estimates to ensure numerical stability and balanced adaptive updates early in training.', 'type': 'float'},
@@ -133,7 +141,7 @@ class BaseOptimizerParamsWindowView:
             'relative_step': {'title': 'Relative Step', 'tooltip': 'Whether to use a relative step size.', 'type': 'bool'},
             'safeguard_warmup': {'title': 'Safeguard Warmup', 'tooltip': 'Avoid issues during warm-up stage.', 'type': 'bool'},
             'scale_parameter': {'title': 'Scale Parameter', 'tooltip': 'Whether to scale the parameter or not.', 'type': 'bool'},
-            'stochastic_rounding': {'title': 'Stochastic Rounding', 'tooltip': 'Stochastic rounding for weight updates. Improves quality when using bfloat16 weights.', 'type': 'bool'},
+            'stochastic_rounding': {'title': 'Stochastic Rounding', 'tooltip': 'Stochastic rounding for weight updates. Improves quality when using bfloat16 weights. ADAM and ADAMW need Fused and ForEach off for it.', 'type': 'bool'},
             'use_bias_correction': {'title': 'Bias Correction', 'tooltip': 'Turn on Adam\'s bias correction.', 'type': 'bool'},
             'use_triton': {'title': 'Use Triton', 'tooltip': 'Whether Triton optimization should be used.', 'type': 'bool'},
             'warmup_init': {'title': 'Warmup Initialization', 'tooltip': 'Whether to warm-up the optimizer initialization.', 'type': 'bool'},

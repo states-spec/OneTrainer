@@ -5,7 +5,7 @@ GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA to
 
 ```sh
 ./run-cmd.sh rocm_check            # quick mode, about 10 minutes (half of it the tiny-model training runs)
-./run-cmd.sh rocm_check --full     # more dtypes, sizes and optimizers, plus TunableOp and torch.compile (30-45 min)
+./run-cmd.sh rocm_check --full     # more dtypes, sizes and optimizers, plus TunableOp, torch.compile and training features (45-60 min)
 ./run-cmd.sh rocm_check --list     # the checks
 ./run-cmd.sh rocm_check --only sdpa offloading     # checks whose "section / name" contains one of these
 ./run-cmd.sh rocm_check --resolutions 512 768 1024 # sizes for the speed checks (default 512 1024)
@@ -40,6 +40,11 @@ results up to the check that was running (the report names it). The exit code is
    - LoRA, DoRA, LoKr (also with DoRA and the vec trick), LoHa and OFT v2 (also with spectral norm clipping), forward and backward under bf16 autocast
    - optimizers built by OneTrainer's own `create_optimizer` (ADV optimizers with every state precision, AdamW,
      schedule-free ones), with a save/resume round trip like a backup
+   - every optimizer with the UI's default settings: created, stepped, saved and resumed like a backup (the resumed
+     run has to match the uninterrupted one), and the fused back pass where it is supported (the bitsandbytes
+     optimizers only on the GPU)
+   - timestep sampling with every distribution, wide noising weights/biases and shifts: no sample outside the
+     noise schedule (one past its end is a device-side assert, which aborts the process under ROCm)
    - layer and activation offloading through the real `LayerOffloadConductor`: same loss and gradients as without
      offloading, only the loaded layers on the GPU after loading, weights bit-identical after load/unload cycles
    - disk streaming (`stream_from_disk`, on by default): a part streamed from a `.safetensors` file through the model
@@ -72,7 +77,16 @@ results up to the check that was running (the report names it). The exit code is
    against the noise; it also reports each run's peak and unused memory, allocation retries and part moves. And the
    model's components on the GPU against the CPU, with the same inputs: the text encoder (captions of two lengths, so
    the attention is masked), the VAE both ways, and the transformer with a LoRA forward and backward, in fp32 and in
-   bf16 under autocast.
+   bf16 under autocast. With `--full`, the same tiny model also trains once per feature (about 35 runs): other
+   optimizers (Prodigy_adv, Muon, AdaMuon with the auxiliary Adam), every LoRA output format and adapter type (LoRA,
+   DoRA, LoHa, LoKr, OFT), an additional embedding, embedding training, fine-tuning, validation, prior prediction,
+   masked prior preservation with an image that has no mask, other losses and noise options, gradient accumulation
+   with the fused back pass, a restarting scheduler, saves every step with EMA, float8 weights. Each run has to finish
+   with finite weights, and each saved LoRA is loaded back as the starting LoRA of a run at learning rate 0, which has
+   to save exactly the same tensors (so no layer, adapter part or bundled embedding is lost or misplaced on loading).
+   When a run fails, the folder with every run is kept (the report names it), each with its whole output in
+   `diag.log`. A run that crashes in native code (ROCm aborts the process on a GPU fault or a failed assert in a
+   kernel: exit code -6) shows the runtime's message and where its threads were in the report line.
 
 ## Reading the results
 
@@ -82,6 +96,11 @@ results up to the check that was running (the report names it). The exit code is
 - Correctness numbers are relative errors: the norm of the difference divided by the norm of the reference. bf16
   results land around 1e-3 to 1e-2, fp32 around 1e-7.
 - Speed ratios are relative to the default settings; above 1 is faster.
+- The first time Triton runs (torch.compile, the 8-bit matmul kernels), it builds a small HIP helper with your C
+  compiler, and the compiler's warnings are printed in between the checks: for example
+  `warning: '_POSIX_C_SOURCE' redefined` from `hip_utils.c`, where the Python headers (here Anaconda's
+  Python 3.13) and a newer glibc define it differently. They are not errors, the check's own line (`-> INFO`,
+  `-> PASS`) is the result, and Triton keeps the built helper in `~/.triton/cache`, so it doesn't build it again.
 
 ## Adding to it
 

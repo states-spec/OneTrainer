@@ -47,6 +47,9 @@ def script_imports(allow_zluda: bool = True):
         # A dependency still passes the deprecated local_dir_use_symlinks to hf_hub_download.
         warnings.filterwarnings("ignore", message=r".*local_dir_use_symlinks.*")
 
+        # diffusers' own Chroma transformer still imports FluxPosEmbed from its old place (printed at every load)
+        warnings.filterwarnings("ignore", message=r"`FluxPosEmbed` is deprecated", category=FutureWarning)
+
         # Suppress harmless torch.compile fallback notes: complex operators use warnings.warn(),
         # while insufficient SMs use logger.warning().
         warnings.filterwarnings("ignore", message=r".*does not support code generation for complex operators.*")

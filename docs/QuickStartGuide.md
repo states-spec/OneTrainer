@@ -119,7 +119,8 @@ extension.
 - The mask of `photo.jpg` is `photo-masklabel.png` in the same folder. Masks are always PNG files, also for `.jpg` or
   `.webp` images, and the name can't be changed. A file with any other name is not used as a mask (`photo-mask.png` is
   even trained as an image of its own).
-- An image without a mask is trained on the whole image, the same as an all-white mask.
+- An image without a mask is trained on the whole image, the same as an all-white mask. At the start of training,
+  OneTrainer says how many images of each concept have no mask and names a few of them.
 - Gray mask values work as partial weights.
 
 On every model the mask weights the loss:

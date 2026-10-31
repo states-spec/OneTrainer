@@ -133,6 +133,16 @@ def _adv_orthograd_mode(value) -> str:
     return value if value is not None else "disabled"
 
 
+def _bnb_lars_on_momentum_kernels(optimizer):
+    # bitsandbytes' LARS is SGD with momentum whose update is limited to max_unorm times the weight norm, run on
+    # momentum's kernels. bitsandbytes 0.49 has no "lars" entry in its 32-bit kernel table (its 8-bit table still maps
+    # "lars" to momentum's kernels, as older releases did for both), so every step on 32-bit state raised "Unsupported
+    # optimizer name: lars": all of LARS, and LARS_8BIT's tensors smaller than min_8bit_size. Momentum's name selects
+    # the same kernels on every path. bitsandbytes doesn't save the name with the optimizer state.
+    optimizer.optimizer_name = "momentum"
+    return optimizer
+
+
 def _adv_state_precision(optimizer: Optimizer, state_precision: str | None, name: str = "state_precision") -> str:
     from modules.util.optimizer_util import adv_state_precisions
     state_precision = state_precision.lower() if state_precision is not None else "auto"
@@ -229,6 +239,17 @@ def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
             raise ValueError(f'State Precision "fp16" does not work with {" or ".join(clashing)} in ADOPT_ADV: '
                              f'adv_optm fails in the first step. Pick another State Precision, or turn '
                              f'{" and ".join(clashing)} off.')
+
+    # torch's fused and foreach Adam(W) steps can't step one parameter at a time or round stochastically.
+    # create_optimizer refuses that too, but only after the model has loaded
+    if optimizer_config.optimizer in (Optimizer.ADAM, Optimizer.ADAMW) \
+            and (optimizer_config.fused or optimizer_config.foreach):
+        needing = [title for title, on in (("Fused Back Pass", optimizer_config.fused_back_pass),
+                                           ("Stochastic Rounding", optimizer_config.stochastic_rounding)) if on]
+        if needing:
+            raise ValueError(f'{" and ".join(needing)} only work{"s" if len(needing) == 1 else ""} with '
+                             f'{optimizer_config.optimizer}\'s plain implementation: turn Fused and ForEach off in '
+                             f'the optimizer settings, or turn {" and ".join(needing)} off.')
 
 
 def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
@@ -559,7 +580,7 @@ def create_optimizer(
         # LARS Optimizer
         case Optimizer.LARS:
             import bitsandbytes as bnb
-            optimizer = bnb.optim.LARS(
+            optimizer = _bnb_lars_on_momentum_kernels(bnb.optim.LARS(
                 params=parameters,
                 lr=config.learning_rate,
                 weight_decay=optimizer_config.weight_decay if optimizer_config.weight_decay is not None else 0,
@@ -567,12 +588,12 @@ def create_optimizer(
                 dampening=optimizer_config.dampening if optimizer_config.dampening is not None else 0,
                 nesterov=optimizer_config.nesterov if optimizer_config.nesterov is not None else False,
                 max_unorm=optimizer_config.max_unorm if optimizer_config.max_unorm is not None else 0.02,
-            )
+            ))
 
         # LARS_8BIT Optimizer
         case Optimizer.LARS_8BIT:
             import bitsandbytes as bnb
-            optimizer = bnb.optim.LARS8bit(
+            optimizer = _bnb_lars_on_momentum_kernels(bnb.optim.LARS8bit(
                 params=parameters,
                 lr=config.learning_rate,
                 weight_decay=optimizer_config.weight_decay if optimizer_config.weight_decay is not None else 0,
@@ -582,7 +603,7 @@ def create_optimizer(
                 min_8bit_size=optimizer_config.min_8bit_size if optimizer_config.min_8bit_size is not None else 4096,
                 percentile_clipping=optimizer_config.percentile_clipping if optimizer_config.percentile_clipping is not None else 100,
                 max_unorm=optimizer_config.max_unorm if optimizer_config.max_unorm is not None else 0.02,
-            )
+            ))
 
         # LAMB Optimizer
         case Optimizer.LAMB:
@@ -1349,23 +1370,54 @@ def create_optimizer(
                 _disable_prodigy_adv_nesterov(optimizer)
 
         if optimizer_config.optimizer.is_adaptive:
-            _warn_stuck_d(optimizer_config, optimizer.param_groups[0])
+            stuck = [group for group in d_at_initial_groups(optimizer, min_steps=20) if group[3] <= 0]
+            if stuck:
+                print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial "
+                      f"D, and its estimate is negative ({_describe_d_at_initial(stuck)}), so D will not grow from "
+                      f"here: the training continues at learning rate x Initial D. For D to adapt again, start without "
+                      f"this backup (Continue From Last Backup off, or a new workspace), or set Initial D to the step "
+                      f"size you want.")
 
     return optimizer
 
 
-def _warn_stuck_d(optimizer_config: TrainOptimizerConfig, group: dict):
-    # Prodigy grows D only while its estimate d_numerator / sum|s| exceeds D, and d_numerator sums
-    # dot(grad, start - weights). Once it is negative (weights that were already trained when the state started, and
-    # every step since moving around that point), D stays at Initial D, and a resumed backup carries that on: the
-    # user's Chroma LoRA resumed such a state run after run (d_numerator -3.7e-5 after 300+ steps, D 1e-4 throughout).
-    d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
-    if d is None or d0 is None or numerator is None or d != d0 or k < 20 or numerator > 0:
-        return
-    print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial D ({d0:g}) "
-          f"after {k} steps, and its estimate is negative (d_numerator {numerator:.3g}), so D will not grow from here: "
-          f"the training continues at learning rate x {d0:g}. For D to adapt again, start without this backup "
-          f"(Continue From Last Backup off, or a new workspace), or set Initial D to the step size you want.")
+def d_at_initial_groups(optimizer: torch.optim.Optimizer, min_steps: int) -> list[tuple[str, float, int, float]]:
+    # Prodigy only ever raises D: to its estimate d_numerator / sum|s| (times d_coef) when that exceeds D. With D still
+    # at Initial D after many steps, the estimate never reached it, so the run trains at a fixed lr x Initial D, which
+    # is larger than the step size Prodigy estimates. d_numerator sums dot(grad, start - weights); once it is negative
+    # (the steps already went too far, the gradients point back towards the start) D can't grow at all. The user's
+    # Chroma LoRA trained like that with LoRA alpha 32 and Initial D 1e-4 (d_numerator negative, D 1e-4 for 450 steps;
+    # alpha 1 and Initial D 1e-6 adapted from step ~30), and a backup resumed such a state run after run.
+    # The (name, Initial D, steps, d_numerator) of each param group still at Initial D after min_steps steps.
+    # D-Adaptation keeps no d0/d_numerator in its groups and is never listed.
+    groups = []
+    for group in optimizer.param_groups:
+        d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
+        if d is None or d0 is None or numerator is None or d != d0 or k < min_steps:
+            continue
+        groups.append((group.get("name", "?"), d0, k, numerator))
+    return groups
+
+
+def _describe_d_at_initial(groups: list[tuple[str, float, int, float]]) -> str:
+    return "; ".join(f"{name}: D {d0:g} after {k} steps, d_numerator {numerator:.3g}" for name, d0, k, numerator in groups)
+
+
+def d_at_initial_training_warning(config: TrainConfig, optimizer: torch.optim.Optimizer, steps: int) -> str | None:
+    # asked once, `steps` optimizer steps into a run. A run that adapts raises D within a few dozen steps (the user's
+    # Chroma LoRA from ~30); early on the estimate can also be slightly negative just from noise (3 random steps:
+    # -2.5e-12), so the run is given time first
+    groups = d_at_initial_groups(optimizer, min_steps=steps)
+    if not groups:
+        return None
+    negative = " A negative d_numerator means D can't grow at all any more." \
+        if any(numerator <= 0 for _, _, _, numerator in groups) else ""
+    lora = " or the LoRA alpha (a LoRA step's effect scales with alpha / rank)" \
+        if config.training_method == TrainingMethod.LORA else ""
+    return (f"Warning: {config.optimizer.optimizer}'s step size D is still at Initial D after {steps} steps of this "
+            f"run ({_describe_d_at_initial(groups)}). Prodigy only raises D, so its estimate stayed below Initial D: "
+            f"the run trains at a fixed learning rate x Initial D, a larger step than Prodigy estimates.{negative} If "
+            f"that isn't intended, lower Initial D (for example to 1e-6){lora}.")
 
 
 def create_ema(

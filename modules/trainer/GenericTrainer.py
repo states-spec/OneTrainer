@@ -16,12 +16,13 @@ from modules.modelSampler.BaseModelSampler import BaseModelSampler, ModelSampler
 from modules.modelSaver.BaseModelSaver import BaseModelSaver
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.trainer.BaseTrainer import BaseTrainer
-from modules.util import create, huggingface_util, path_util
+from modules.util import concept_stats, create, huggingface_util, path_util
 from modules.util.bf16_stochastic_rounding import set_seed as bf16_stochastic_rounding_set_seed
 from modules.util.cache_util import changed_cache_settings, save_cache_settings
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.compile_util import init_compile, reset_compile
+from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.TrainConfig import TrainConfig, get_output_model_destination
 from modules.util.dtype_util import create_grad_scaler, enable_grad_scaling
@@ -53,6 +54,8 @@ from torchvision.transforms.functional import pil_to_tensor
 _DEBUG_PROFILES = os.environ.get("OT_DEBUG_PROFILES") == "1"
 _MEMORY_PROFILE_STEPS = (0, 1) if _DEBUG_PROFILES else ()
 _PROFILE_STEPS = (10, 11, 40, 41) if _DEBUG_PROFILES else ()
+# optimizer steps into a run after which a D-adapting optimizer still at Initial D is reported (create.d_at_initial_groups)
+_D_AT_INITIAL_CHECK_STEPS = 100
 
 
 class GenericTrainer(BaseTrainer):
@@ -119,6 +122,8 @@ class GenericTrainer(BaseTrainer):
 
         if multi.is_master():
             self.__save_config_to_workspace()
+            if self.config.masked_training:
+                self.__report_images_without_mask()
 
             if self.config.latent_caching:
                 if self.config.clear_cache_before_training:
@@ -158,7 +163,9 @@ class GenericTrainer(BaseTrainer):
                     # the trained transformer is part of the backup, a configured override would replace it
                     model_names.transformer_model = ""
 
-                print(f"Continuing training from backup '{last_backup_path}'...")
+                description = self.config.describe_backup(last_backup_path)
+                print(f"Continuing training from backup '{last_backup_path}'"
+                      f"{f' ({description})' if description else ''}...")
             else:
                 print("No backup found, continuing without backup...")
 
@@ -255,11 +262,27 @@ class GenericTrainer(BaseTrainer):
                 f", the same choice without 'compressed' on the model tab): the same weights, uncompressed."
             )
 
+    def __report_images_without_mask(self):
+        # masked training gives an image without a mask file an all-white mask, which trains the whole image
+        concepts = self.config.concepts
+        if concepts is None:
+            try:
+                with open(self.config.concept_file_name, "r", encoding="utf-8") as f:
+                    concepts = [ConceptConfig.default_values().from_dict(c) for c in json.load(f)]
+            except (OSError, ValueError):
+                return  # the data loader reports a missing or unreadable concepts file
+        for concept, missing, total, examples in concept_stats.images_without_mask(
+                concepts, allow_videos=self.config.model_type.is_video_model()):
+            print(f"Masked training: {missing} of {total} images in concept '{concept.name or concept.path}' "
+                  f"{'has' if missing == 1 else 'have'} no mask (<image name>-masklabel.png next to the image), so "
+                  f"{'it trains' if missing == 1 else 'they train'} on the whole image: {', '.join(examples)}"
+                  f"{', ...' if missing > len(examples) else ''}")
+
     def __save_config_to_workspace(self):
         path = path_util.canonical_join(self.config.workspace_dir, "config")
         os.makedirs(Path(path).absolute(), exist_ok=True)
         path = path_util.canonical_join(path, f"{self.config.run_name}.json")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.config.to_pack_dict(secrets=False), f, indent=4)
 
     def __clear_cache(self):
@@ -380,7 +403,7 @@ class GenericTrainer(BaseTrainer):
             sample_params_list = self.config.samples
         else:
             try:
-                with open(self.config.sample_definition_file_name, 'r') as f:
+                with open(self.config.sample_definition_file_name, 'r', encoding="utf-8") as f:
                     samples = json.load(f)
                     for i in range(len(samples)):
                         samples[i] = SampleConfig.default_values(self.config.model_type).from_dict(samples[i])
@@ -519,7 +542,7 @@ class GenericTrainer(BaseTrainer):
 
         os.makedirs(Path(config_path).absolute(), exist_ok=True)
 
-        with open(args_path, "w") as f:
+        with open(args_path, "w", encoding="utf-8") as f:
             json.dump(self.config.to_settings_dict(secrets=False), f, indent=4)
         if os.path.isfile(self.config.concept_file_name):
             shutil.copy2(self.config.concept_file_name, concepts_path)
@@ -749,6 +772,7 @@ class GenericTrainer(BaseTrainer):
         accumulated_loss = torch.tensor(0.0, device=train_device)
         ema_loss = None
         ema_loss_steps = 0
+        optimizer_steps = 0
         epochs = range(train_progress.epoch, self.config.epochs, 1)
 
         if multi.is_master():
@@ -961,6 +985,14 @@ class GenericTrainer(BaseTrainer):
 
                         self.one_step_trained = True
                         diagnostics.step(train_progress.global_step, train_progress.epoch, accumulated_loss_cpu)
+
+                        optimizer_steps += 1
+                        if optimizer_steps == _D_AT_INITIAL_CHECK_STEPS and multi.is_master() \
+                                and self.config.optimizer.optimizer.is_adaptive:
+                            message = create.d_at_initial_training_warning(
+                                self.config, self.model.optimizer, _D_AT_INITIAL_CHECK_STEPS)
+                            if message:
+                                tqdm.write(message)
 
                 if self.config.validation and multi.is_master():
                     self.__validate(train_progress)

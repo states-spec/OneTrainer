@@ -1,12 +1,13 @@
 import torch
 
 _UNAVAILABLE_REASON = ""
-if torch.version.hip is not None:
-    # nvCOMP is NVIDIA-only (CUDA), so a ROCm build of PyTorch never has a backend: it isn't tried, and the
+if torch.version.hip is not None or torch.version.cuda is None:
+    # nvCOMP is NVIDIA-only (CUDA), so a ROCm or CPU-only build of PyTorch never has a backend: it isn't tried, and the
     # "no backend available" line no longer prints at every start. A compressed weight data type still says why it
     # can't be used (quantization_util).
     _AVAILABLE = False
-    _UNAVAILABLE_REASON = "nvCOMP is NVIDIA-only (CUDA) and this PyTorch is a ROCm build"
+    _UNAVAILABLE_REASON = (f"nvCOMP is NVIDIA-only (CUDA) and this PyTorch is a "
+                           f"{'ROCm' if torch.version.hip is not None else 'CPU-only'} build")
 else:
     try:
         from modules.util.nvcomp_util_lowlevel import compress as compress

@@ -91,6 +91,11 @@ results up to the check that was running (the report names it). The exit code is
 - Correctness numbers are relative errors: the norm of the difference divided by the norm of the reference. bf16
   results land around 1e-3 to 1e-2, fp32 around 1e-7.
 - Speed ratios are relative to the default settings; above 1 is faster.
+- The first time Triton runs (torch.compile, the 8-bit matmul kernels), it builds a small HIP helper with your C
+  compiler, and the compiler's warnings are printed in between the checks: for example
+  `warning: '_POSIX_C_SOURCE' redefined` from `hip_utils.c`, where the Python headers (here Anaconda's
+  Python 3.13) and a newer glibc define it differently. They are not errors, the check's own line (`-> INFO`,
+  `-> PASS`) is the result, and Triton keeps the built helper in `~/.triton/cache`, so it doesn't build it again.
 
 ## Adding to it
 

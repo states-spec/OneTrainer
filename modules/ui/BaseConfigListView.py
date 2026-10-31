@@ -212,6 +212,13 @@ class BaseConfigListView(ABC):
 
         if len(self.configs) == 0:
             name = self.default_config_name.removesuffix(".json")
+            # a fresh install: write the empty default list before the dropdown loads it. Loading it while it didn't
+            # exist yet printed "Failed to load config from training_concepts/concepts.json" at the first start
+            try:
+                os.makedirs(self.config_dir, exist_ok=True)
+                write_json_atomic(path_util.canonical_join(self.config_dir, f"{path_util.safe_filename(name)}.json"), [])
+            except OSError as e:
+                print(f"Failed to save config: {e}")
             self.__create_config(name)
             self.save_current_config()
 

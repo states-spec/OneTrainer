@@ -25,6 +25,20 @@ import torch
 _TRUE = ("1", "true", "yes")
 _ENV_PREFIXES = ("OT_", "PYTORCH_", "HIP_", "ROCR_", "HSA_", "MIOPEN_", "TORCH_", "AMD_", "CUDA_", "HCC_", "GPU_")
 _ENV_SECRET_WORDS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
+# the packages whose versions decide how a run computes, beside torch itself: runs from different environments (diag_ab
+# python:PATH variants) differ in these too
+_PACKAGES = ("torchvision", "triton", "pytorch-triton-rocm", "rocm-sdk-core", "diffusers", "transformers", "mgds",
+             "adv_optm", "bitsandbytes", "safetensors", "accelerate")
+
+
+def _package_versions() -> dict[str, str]:
+    import importlib.metadata
+
+    versions = {}
+    for name in _PACKAGES:
+        with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+            versions[name] = importlib.metadata.version(name)
+    return versions
 
 
 def _private_ram_bytes() -> int | None:
@@ -305,9 +319,12 @@ class RunDiagnostics:
             "argv": sys.argv,
             "python": platform.python_version(),
             "platform": platform.platform(),
+            "executable": sys.executable,
             "torch": torch.__version__,
             "hip": torch.version.hip,
+            "rocm": getattr(torch.version, "rocm", None),  # AMD's own builds (ROCm 10)
             "cuda": torch.version.cuda,
+            "packages": _package_versions(),
             "device": str(device),
             "env": {k: v for k, v in sorted(os.environ.items())
                     if k.startswith(_ENV_PREFIXES) and not any(w in k for w in _ENV_SECRET_WORDS)},

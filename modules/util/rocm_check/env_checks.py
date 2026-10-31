@@ -1,11 +1,10 @@
 import contextlib
 import importlib.metadata
 import os
-import subprocess
 import sys
 from pathlib import Path
 
-from modules.util.rocm_check.framework import Ctx, Rec, check
+from modules.util.rocm_check.framework import Ctx, Rec, check, onetrainer_version
 from modules.util.torch_util import fp8_matmul_supported
 
 import torch
@@ -51,14 +50,6 @@ def rocm_runtime_lines() -> list[str]:
     return lines
 
 
-def _git(*args: str) -> str:
-    try:
-        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10,
-                              cwd=Path(__file__).resolve().parents[3]).stdout.strip()
-    except Exception:
-        return "?"
-
-
 def _list_gpus(ctx: Ctx, rec: Rec):
     # every visible GPU: an integrated one (a Ryzen CPU's) shows up next to the discrete card on ROCm
     integrated = []
@@ -81,8 +72,7 @@ def _list_gpus(ctx: Ctx, rec: Rec):
 @check(SECTION, "PyTorch, GPU, libraries and settings")
 def environment(ctx: Ctx, rec: Rec):
     rec.info()
-    rec.line(f"OneTrainer {_git('rev-parse', '--abbrev-ref', 'HEAD')} @ {_git('rev-parse', '--short', 'HEAD')}"
-             f"{' (uncommitted changes)' if _git('status', '--porcelain', '--untracked-files=no') else ''}")
+    rec.line(f"OneTrainer {onetrainer_version()}")
     rocm = getattr(torch.version, "rocm", None)  # AMD's own builds (ROCm 10: torch 2.13.0+rocm10.1.0 has HIP 7.16)
     rec.line(f"Python {sys.version.split()[0]}, torch {torch.__version__}, "
              f"HIP {torch.version.hip}{f' (ROCm {rocm})' if rocm else ''}, CUDA {torch.version.cuda}")

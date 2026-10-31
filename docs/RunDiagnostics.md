@@ -100,6 +100,19 @@ Other comparisons: `--variant 'NAME env:KEY=VALUE config:key=value ...'`, as oft
 `--config-value` applies to every run (shorten the run with `epochs=1`, as with `train`), `--repeats` sets the runs per
 variant (default 2), `--out-dir` the folder, `--preset-path` a built-in preset applied first.
 
+`python:PATH` runs a variant with another environment's interpreter: this checkout's code with that venv's PyTorch and
+ROCm build. That compares two builds on your real workload, in alternating order:
+
+```sh
+./run-cmd.sh diag_ab --config-path my_config.json --config-value epochs=1 \
+    --variant 'rocm72 python:~/OT_KP2/venv/bin/python' \
+    --variant 'rocm101 python:~/OT_ROCm10/venv/bin/python'
+```
+
+The other venv needs OneTrainer's requirements from a compatible commit (each log records the interpreter, torch and
+the main package versions, and the report lists those that differ). Its first run fills that build's kernel caches
+(MIOpen, Triton, TunableOp if on), so compare the repeats.
+
 ### Reading an A/B
 
 - **Correctness first.** Two runs of the same variant show the noise. A setting that only moves memory around (MemPools,

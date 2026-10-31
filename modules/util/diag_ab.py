@@ -1,6 +1,8 @@
-"""Runs one training config under several variants (environment variables and/or config values), each run with its own
-workspace, cache and output folder and its own OT_DIAG_LOG, in alternating order, then compares them (diag_report).
-The default variants are the MemPool A/B on ROCm: baseline, and OT_ROCM_MEM_POOLS=true."""
+"""Runs one training config under several variants (environment variables, config values and/or another Python
+environment), each run with its own workspace, cache and output folder and its own OT_DIAG_LOG, in alternating order,
+then compares them (diag_report). The default variants are the MemPool A/B on ROCm: baseline, and
+OT_ROCM_MEM_POOLS=true. A variant with python:PATH trains this checkout's code with that interpreter, i.e. with the
+PyTorch/ROCm build of its venv: the way to compare two builds on the real workload."""
 import json
 import os
 import shlex
@@ -15,18 +17,22 @@ class Variant:
     name: str
     env: dict[str, str] = field(default_factory=dict)
     config_values: list[str] = field(default_factory=list)
+    python: str | None = None  # another environment's interpreter (e.g. another venv's bin/python)
 
 
 def parse_variant(spec: str) -> Variant:
-    """'NAME env:KEY=VALUE config:key=value ...'"""
+    """'NAME env:KEY=VALUE config:key=value python:PATH ...'"""
     tokens = shlex.split(spec)
     if not tokens or "=" in tokens[0] or ":" in tokens[0]:
         raise ValueError(f"a variant starts with its name: {spec!r}")
     variant = Variant(tokens[0])
     for token in tokens[1:]:
         kind, _, assignment = token.partition(":")
+        if kind == "python" and assignment:
+            variant.python = os.path.abspath(os.path.expanduser(assignment))
+            continue
         if "=" not in assignment or kind not in ("env", "config"):
-            raise ValueError(f"expected env:KEY=VALUE or config:key=value, got {token!r} in {spec!r}")
+            raise ValueError(f"expected env:KEY=VALUE, config:key=value or python:PATH, got {token!r} in {spec!r}")
         if kind == "env":
             key, _, value = assignment.partition("=")
             variant.env[key] = value
@@ -83,7 +89,7 @@ def run_ab(config_path: str, variants: list[Variant], repeats: int, out_dir: str
             log = os.path.join(run_dir, "diag.jsonl")
             if os.path.exists(log):
                 os.remove(log)
-            cmd = [python, os.path.join(root, "scripts", "train.py"), "--config-path", config_path]
+            cmd = [variant.python or python, os.path.join(root, "scripts", "train.py"), "--config-path", config_path]
             if preset_path:
                 cmd += ["--preset-path", preset_path]
             # own folders, so every run loads, caches and trains the same way; a fixed name, so outputs can be found
@@ -95,11 +101,14 @@ def run_ab(config_path: str, variants: list[Variant], repeats: int, out_dir: str
             env = dict(os.environ)
             # the same LoRA initialization in every run (unseeded otherwise), unless the caller chose a seed
             env.setdefault("OT_SEED", "42")
+            if variant.python:
+                # tools the run looks up on PATH come from the same environment as its interpreter
+                env["PATH"] = os.pathsep.join(filter(None, [os.path.dirname(variant.python), env.get("PATH")]))
             env.update(variant.env)
             env["OT_DIAG_LOG"] = log
             env["OT_DIAG_LABEL"] = variant.name
             print(f"=== {variant.name}, run {repeat} of {repeats}: {' '.join(f'{k}={v}' for k, v in variant.env.items())}"
-                  f" {' '.join(variant.config_values)}", flush=True)
+                  f" {' '.join(variant.config_values)}{f' with {variant.python}' if variant.python else ''}", flush=True)
             start = time.perf_counter()
             with open(os.path.join(run_dir, "output.log"), "w", encoding="utf-8") as out:
                 result = subprocess.run(cmd, cwd=root, env=env, stdout=out, stderr=subprocess.STDOUT)

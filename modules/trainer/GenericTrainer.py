@@ -16,12 +16,13 @@ from modules.modelSampler.BaseModelSampler import BaseModelSampler, ModelSampler
 from modules.modelSaver.BaseModelSaver import BaseModelSaver
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
 from modules.trainer.BaseTrainer import BaseTrainer
-from modules.util import create, huggingface_util, path_util
+from modules.util import concept_stats, create, huggingface_util, path_util
 from modules.util.bf16_stochastic_rounding import set_seed as bf16_stochastic_rounding_set_seed
 from modules.util.cache_util import changed_cache_settings, save_cache_settings
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.compile_util import init_compile, reset_compile
+from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.TrainConfig import TrainConfig, get_output_model_destination
 from modules.util.dtype_util import create_grad_scaler, enable_grad_scaling
@@ -121,6 +122,8 @@ class GenericTrainer(BaseTrainer):
 
         if multi.is_master():
             self.__save_config_to_workspace()
+            if self.config.masked_training:
+                self.__report_images_without_mask()
 
             if self.config.latent_caching:
                 if self.config.clear_cache_before_training:
@@ -256,6 +259,22 @@ class GenericTrainer(BaseTrainer):
                 f"({', '.join(f'{part}: {getattr(self.config, part).weight_dtype.uncompressed()}' for part in compressed_parts)}"
                 f", the same choice without 'compressed' on the model tab): the same weights, uncompressed."
             )
+
+    def __report_images_without_mask(self):
+        # masked training gives an image without a mask file an all-white mask, which trains the whole image
+        concepts = self.config.concepts
+        if concepts is None:
+            try:
+                with open(self.config.concept_file_name, "r") as f:
+                    concepts = [ConceptConfig.default_values().from_dict(c) for c in json.load(f)]
+            except (OSError, ValueError):
+                return  # the data loader reports a missing or unreadable concepts file
+        for concept, missing, total, examples in concept_stats.images_without_mask(
+                concepts, allow_videos=self.config.model_type.is_video_model()):
+            print(f"Masked training: {missing} of {total} images in concept '{concept.name or concept.path}' "
+                  f"{'has' if missing == 1 else 'have'} no mask (<image name>-masklabel.png next to the image), so "
+                  f"{'it trains' if missing == 1 else 'they train'} on the whole image: {', '.join(examples)}"
+                  f"{', ...' if missing > len(examples) else ''}")
 
     def __save_config_to_workspace(self):
         path = path_util.canonical_join(self.config.workspace_dir, "config")

@@ -3,9 +3,12 @@ class EmbeddingName:
             self,
             uuid: str,
             model_name: str,
+            placeholder: str = "",
     ):
         self.uuid = uuid
         self.model_name = model_name
+        # names the embedding in a LoRA file's bundle (bundle_emb.<placeholder>.*)
+        self.placeholder = placeholder
 
 
 class ModelNames:

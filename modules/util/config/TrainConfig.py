@@ -1050,9 +1050,9 @@ class TrainConfig(BaseConfig):
             text_encoder_4=self.text_encoder_4.model_name,
             vae_model=self.vae.model_name,
             lora=self.lora_model_name,
-            embedding=EmbeddingName(self.embedding.uuid, self.embedding.model_name) \
+            embedding=EmbeddingName(self.embedding.uuid, self.embedding.model_name, self.embedding.placeholder) \
                 if self.training_method == TrainingMethod.EMBEDDING else None,
-            additional_embeddings=[EmbeddingName(embedding.uuid, embedding.model_name) for embedding in
+            additional_embeddings=[EmbeddingName(embedding.uuid, embedding.model_name, embedding.placeholder) for embedding in
                                    self.additional_embeddings],
             include_text_encoder=self.text_encoder.include,
             include_text_encoder_2=self.text_encoder_2.include,

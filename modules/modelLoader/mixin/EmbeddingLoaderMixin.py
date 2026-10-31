@@ -8,10 +8,15 @@ from modules.util.ModelNames import EmbeddingName, ModelNames
 import torch
 from torch import Tensor
 
+from safetensors import safe_open
 from safetensors.torch import load_file
 
 
 class EmbeddingLoaderMixin(metaclass=ABCMeta):
+    # keys of a LoRA file's bundled embedding (bundle_emb.<placeholder>.<key>, written by the LoRA savers) that this
+    # model's embedding files name differently
+    _bundle_key_names: dict[str, str] = {}
+
     def __init__(self):
         super().__init__()
 
@@ -66,3 +71,24 @@ class EmbeddingLoaderMixin(metaclass=ABCMeta):
                 except Exception as e2:
                     e2.__cause__ = e1
                     raise Exception(f"could not load embedding: {embedding_name}") from e2
+
+            if model.embedding_state_dicts.get(embedding_name.uuid) is None and embedding_name.model_name == "":
+                # no file of its own: continuing from a final LoRA, the embedding is in that file's bundle
+                # (bundle_additional_embeddings); before, it started again from its initial text
+                bundled = self.__load_bundled(directory, embedding_name.placeholder)
+                if bundled is not None:
+                    model.embedding_state_dicts[embedding_name.uuid] = bundled
+                    print(f"Loaded the embedding '{embedding_name.placeholder}' from the LoRA file '{directory}'")
+
+    def __load_bundled(
+            self,
+            lora_file: str,
+            placeholder: str,
+    ) -> dict[str, Tensor] | None:
+        if not placeholder or not os.path.isfile(lora_file) or not lora_file.endswith(".safetensors"):
+            return None
+        prefix = f"bundle_emb.{placeholder}."
+        with safe_open(lora_file, framework="pt") as f:
+            state = {self._bundle_key_names.get(key[len(prefix):], key[len(prefix):]): f.get_tensor(key)
+                     for key in f.keys() if key.startswith(prefix)}  # noqa: SIM118 -- safe_open handle, not a dict
+        return state or None

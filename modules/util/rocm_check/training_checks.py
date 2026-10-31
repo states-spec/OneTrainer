@@ -4,6 +4,7 @@ VAE encodes (the ROCm NaN-latent bug the caching lock works around).
 """
 import copy
 import io
+import itertools
 import os
 import threading
 import time
@@ -298,6 +299,39 @@ def all_optimizers(ctx: Ctx, rec: Rec):
             rec.fail(f"{optimizer}: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
     for text in names:
         rec.line(text)
+
+
+@check(SECTION, "timestep sampling stays inside the noise schedule (every distribution, wide settings, shifts)")
+def timestep_range(ctx: Ctx, rec: Rec):
+    from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+    from modules.util.config.TrainConfig import TrainConfig
+    from modules.util.enum.TimestepDistribution import TimestepDistribution
+
+    # The sampled timestep indexes the noise schedule, and wide settings reach its end: LOGIT_NORMAL at the Chroma
+    # presets' noising weight 7.7 drew num_train_timesteps itself for 2% of the samples, one past the last entry (a
+    # device-side assert on the GPU, which aborted the training run under ROCm). The samples are only compared here,
+    # never used as an index, so a regression fails this check instead of ending rocm_check.
+    settings = [(0.0, 0.0), (3.0, 1.0), (7.7, 0.0), (20.0, -2.0), (1.0, 0.5), (0.5, 1.0)]
+    sampled, refused = 0, []
+    for distribution, (weight, bias), shift in itertools.product(TimestepDistribution, settings, (1.0, 3.0)):
+        config = TrainConfig.default_values()
+        config.timestep_distribution, config.noising_weight, config.noising_bias = distribution, weight, bias
+        config.timestep_shift = shift
+        for n in (1000, 10000):  # 10000: the continuous models' discretization (_get_timestep_continuous)
+            sampler = type("Sampler", (ModelSetupNoiseMixin,), {})()  # a fresh one: the discrete ones cache weights
+            generator = torch.Generator(device=ctx.device).manual_seed(ctx.seed + sampled)
+            try:
+                timestep = sampler._get_timestep_discrete(n, False, generator, 16384, config)
+            except ValueError:  # no valid weights (INVERTED_PARABOLA with its peak far outside): refused with a message
+                refused.append(f"{distribution} {weight}/{bias}/{shift}")
+                continue
+            sampled += 1
+            low, high = int(timestep.min()), int(timestep.max())
+            if low < 0 or high >= n:
+                rec.fail(f"{distribution}, noising weight {weight}, bias {bias}, shift {shift}: timesteps {low}..{high}, "
+                         f"outside the schedule's 0..{n - 1}")
+    rec.line(f"{sampled} settings x 16384 samples on {ctx.device}; refused for having no valid weights: "
+             f"{', '.join(sorted(set(refused))) or 'none'}")
 
 
 class _Block(nn.Module):

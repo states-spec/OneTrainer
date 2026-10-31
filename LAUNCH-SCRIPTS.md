@@ -41,7 +41,7 @@
 
 - `OT_DETERMINISTIC`: If set to `true`, PyTorch is asked for deterministic GPU kernels, so two runs of the same config differ less (operations without a deterministic kernel print a warning and run as before). For comparing runs; can be slower. Defaults to `false`.
 
-- `OT_PLATFORM_REQUIREMENTS`: Allows you to override which platform-specific "requirements" file you want to install. Defaults to `detect`, which automatically detects whether you have an AMD or NVIDIA GPU. But people with multi-GPU systems can use this setting to force a specific GPU acceleration framework's requirements. Valid values are `requirements-rocm.txt` for AMD, `requirements-cuda.txt` for NVIDIA, and `requirements-default.txt` for non-AMD/NVIDIA systems.
+- `OT_PLATFORM_REQUIREMENTS`: Allows you to override which platform-specific "requirements" file you want to install. Defaults to `detect`, which automatically detects whether you have an AMD or NVIDIA GPU. But people with multi-GPU systems can use this setting to force a specific GPU acceleration framework's requirements. Valid values are `requirements-rocm.txt` for AMD, `requirements-cuda.txt` for NVIDIA, and `requirements-default.txt` for non-AMD/NVIDIA systems. `requirements-rocm10.txt` is an opt-in alternative for AMD: ROCm 10.1 with AMD's own PyTorch builds, set up for gfx1100 GPUs (Radeon RX 7900 series) and without bitsandbytes (see the file). Use it in a separate copy of OneTrainer, and pass it to `update.sh` there too.
 
 - `OT_SCRIPT_DEBUG`: If set to `true`, it enables additional debug logging in the scripts. Defaults to `false`.
 

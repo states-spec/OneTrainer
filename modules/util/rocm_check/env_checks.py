@@ -30,6 +30,27 @@ AOTRITON_EXPERIMENTAL = {"gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1152", 
 FP8_ARCHS_ROCM = {"gfx942", "gfx950", "gfx1200", "gfx1201"}
 
 
+def rocm_runtime_lines() -> list[str]:
+    """Where the ROCm user-space libraries come from: AMD's pip packages (ROCm 10 builds: rocm-sdk-core) or the ones
+    PyTorch's own ROCm wheels bundle, and which HIP runtime this process loaded. Two different HIP runtimes in one
+    process (e.g. a library built against /opt/rocm next to the pip one) don't work together."""
+    lines = []
+    sdk = []
+    for name in ("rocm-sdk-core", "rocm-sdk-libraries"):
+        with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+            sdk.append(f"{name} {importlib.metadata.version(name)}")
+    if sdk:
+        lines.append("ROCm from pip: " + ", ".join(sdk))
+    try:
+        with open("/proc/self/maps", encoding="utf-8") as f:
+            hip = sorted({line.split()[-1] for line in f if "libamdhip64" in line and "/" in line})
+    except OSError:
+        hip = []
+    if hip:
+        lines.append(("HIP runtime loaded from: " if len(hip) == 1 else "SEVERAL HIP runtimes loaded: ") + ", ".join(hip))
+    return lines
+
+
 def _git(*args: str) -> str:
     try:
         return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10,
@@ -62,10 +83,16 @@ def environment(ctx: Ctx, rec: Rec):
     rec.info()
     rec.line(f"OneTrainer {_git('rev-parse', '--abbrev-ref', 'HEAD')} @ {_git('rev-parse', '--short', 'HEAD')}"
              f"{' (uncommitted changes)' if _git('status', '--porcelain', '--untracked-files=no') else ''}")
+    rocm = getattr(torch.version, "rocm", None)  # AMD's own builds (ROCm 10: torch 2.13.0+rocm10.1.0 has HIP 7.16)
     rec.line(f"Python {sys.version.split()[0]}, torch {torch.__version__}, "
-             f"HIP {torch.version.hip}, CUDA {torch.version.cuda}")
+             f"HIP {torch.version.hip}{f' (ROCm {rocm})' if rocm else ''}, CUDA {torch.version.cuda}")
     rec.metric("torch", torch.__version__)
     rec.metric("hip", torch.version.hip)
+    if rocm:
+        rec.metric("rocm", rocm)
+    if ctx.is_rocm:
+        for line in rocm_runtime_lines():
+            (rec.warn if line.startswith("SEVERAL") else rec.line)(line)
 
     if ctx.is_gpu:
         props = torch.cuda.get_device_properties(ctx.device)
@@ -105,6 +132,9 @@ def environment(ctx: Ctx, rec: Rec):
             rec.warn("bitsandbytes' native library failed to load: *_8BIT optimizers, INT_8 and NFLOAT_4 won't work")
         else:
             rec.line(f"bitsandbytes library: {os.path.basename(bnb_ext.lib._lib._name)}")
+    except ModuleNotFoundError:
+        rec.warn("bitsandbytes is not installed: *_8BIT optimizers, ADAGRAD, RMSPROP, LARS, LAMB, AdEMAMix, INT_8 and "
+                 "NFLOAT_4 won't work (requirements-rocm10.txt leaves it out: no release has a build for its ROCm)")
     except Exception as e:
         rec.warn(f"bitsandbytes import failed: {type(e).__name__}: {e}")
 

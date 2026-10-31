@@ -3,6 +3,7 @@ save/resume round trip), layer offloading through the real LayerOffloadConductor
 VAE encodes (the ROCm NaN-latent bug the caching lock works around).
 """
 import copy
+import importlib.util
 import io
 import itertools
 import os
@@ -106,6 +107,11 @@ def adapters(ctx: Ctx, rec: Rec):
             rec.metric(f"fwd+bwd ms 2x1024x3072 {name}", t)
 
 
+def _bitsandbytes_installed() -> bool:
+    # requirements-rocm10.txt leaves it out: no bitsandbytes release has a build for ROCm 10.1 (HIP 7.16) yet
+    return importlib.util.find_spec("bitsandbytes") is not None
+
+
 def _optimizer_list(ctx: Ctx):
     from modules.util.enum.Optimizer import Optimizer
     from modules.util.optimizer_util import adv_state_precisions
@@ -113,7 +119,7 @@ def _optimizer_list(ctx: Ctx):
     optimizers = [Optimizer.ADOPT_ADV, Optimizer.PRODIGY_ADV, Optimizer.ADAMW]
     if ctx.full:
         optimizers += [Optimizer.ADAMW_ADV, Optimizer.PRODIGY_PLUS_SCHEDULE_FREE, Optimizer.SCHEDULE_FREE_ADAMW]
-        if ctx.is_gpu:
+        if ctx.is_gpu and _bitsandbytes_installed():
             optimizers.append(Optimizer.ADAMW_8BIT)
     out = []
     for opt in optimizers:
@@ -242,8 +248,10 @@ def optimizers(ctx: Ctx, rec: Rec):
             rec.expect(diff < 1e-3, f"{label_opt} fp32: GPU vs CPU after 6 steps rel diff {diff:.1e} (limit 1e-3)")
 
 
-# optimizers backed by bitsandbytes, even 32-bit (create.py); its optimizers run only on the GPU
-_BNB_OPTIMIZERS = ("ADAGRAD", "RMSPROP", "LARS", "LAMB", "AdEMAMix")
+# the optimizers create.py builds from bitsandbytes classes, 32-bit ones included (CAME_8BIT is OneTrainer's own);
+# they run only on the GPU
+_BNB_OPTIMIZERS = ("ADAGRAD", "ADAGRAD_8BIT", "ADAM_8BIT", "ADAMW_8BIT", "AdEMAMix", "AdEMAMix_8BIT", "LAMB",
+                   "LAMB_8BIT", "LARS", "LARS_8BIT", "LION_8BIT", "RMSPROP", "RMSPROP_8BIT", "SGD_8BIT")
 
 
 @check(SECTION, "every optimizer with its UI defaults: create, step, save/resume, fused back pass (create_optimizer)")
@@ -253,9 +261,10 @@ def all_optimizers(ctx: Ctx, rec: Rec):
     # 2D parameters only, as a LoRA has: Muon and AdaMuon without the auxiliary Adam refuse 1D ones
     shapes = [(16, 64), (64, 16), (64, 1)]
     names = []
+    bnb_installed = _bitsandbytes_installed()
     for optimizer in Optimizer:
-        if (optimizer.name.endswith("8BIT") or optimizer.name in _BNB_OPTIMIZERS) and not ctx.is_gpu:
-            names.append(f"{optimizer} (bitsandbytes, GPU only: not run)")
+        if optimizer.name in _BNB_OPTIMIZERS and not (ctx.is_gpu and bnb_installed):
+            names.append(f"{optimizer} (bitsandbytes, {'GPU only' if bnb_installed else 'not installed'}: not run)")
             continue
         params = [_rand(ctx, *shape, scale=0.1, seed=40 + i) for i, shape in enumerate(shapes)]
         try:

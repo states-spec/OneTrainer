@@ -1,0 +1,37 @@
+# AMD GPUs on Linux with ROCm 10.1 and AMD's own PyTorch builds: an opt-in alternative to requirements-rocm.txt
+# (ROCm 7.2 and PyTorch's builds, still the default). The ROCm user-space libraries come as pip packages (rocm-sdk-*)
+# instead of from /opt/rocm; the kernel driver is the system's. Install it into a separate clone, so a working setup
+# stays as it is, and pass the variable to update.sh there too (without it, update.sh installs requirements-rocm.txt):
+#   OT_PLATFORM_REQUIREMENTS=requirements-rocm10.txt ./install.sh
+#   OT_PLATFORM_REQUIREMENTS=requirements-rocm10.txt ./update.sh
+# Compare `./run-cmd.sh rocm_check --full` there with a ROCm 7.2 report before training with it.
+#
+# torch 2.13.0 is the version requirements-rocm.txt pins, so this changes ROCm only (ROCm 10.1 also has 2.12.0 and
+# 2.14.0 builds). torch.version.hip is 7.16 here, and the attention kernels are AOTriton 0.14 (0.12b in 2.13.0+rocm7.2).
+#
+# GPU code comes in per-architecture packages; everything named gfx1100 below is for gfx1100 (Radeon RX 7900 XTX, XT
+# and GRE, Radeon PRO W7900 and W7800). amd-torch-device-gfx110x holds the AOTriton kernels (flash attention) for all
+# gfx110x GPUs. For another GPU, use its architecture's packages instead (rocm-bootstrap-detect --unique, installed
+# with torch, prints it).
+#
+# Every AMD package is pinned exactly. PyPI has placeholder packages under the same names (rocm, rocm-sdk-*,
+# amd-torch-device-*; not AMD's), and torch itself only asks for rocm[libraries]~=10.1.0: with two indexes, a later
+# upload there could otherwise be installed. AMD's own instructions install from their index alone (--index-url).
+--extra-index-url https://stable.repo.amd.com/rocm/whl-next/
+torch[device-gfx1100]==2.13.0+rocm10.1.0; sys_platform == "linux"
+torchvision[device-gfx1100]==0.28.0+rocm10.1.0; sys_platform == "linux"
+amd-torch-device-gfx1100==2.13.0+rocm10.1.0; sys_platform == "linux"
+amd-torch-device-gfx110x==2.13.0+rocm10.1.0; sys_platform == "linux"
+amd-torchvision-device-gfx1100==0.28.0+rocm10.1.0; sys_platform == "linux"
+triton==3.8.0+git669b31ac.rocm10.1.0; sys_platform == "linux"
+rocm[libraries]==10.1.0; sys_platform == "linux"
+rocm-sdk-core==10.1.0; sys_platform == "linux"
+rocm-sdk-libraries==10.1.0; sys_platform == "linux"
+rocm-sdk-device-gfx1100==10.1.0; sys_platform == "linux"
+rocm-bootstrap==0.3.0; sys_platform == "linux"
+onnxruntime==1.23.2 # CPU build: the captioning and masking models only use the CUDA or CPU execution provider
+
+# bitsandbytes is left out. It loads libbitsandbytes_rocm<HIP major><minor>.so, and its newest release (0.50.2) has
+# ROCm builds up to rocm715, none for HIP 7.16, so it would only log a load error at every start. Without it the *_8BIT
+# optimizers, ADAGRAD, RMSPROP, LARS, LAMB, AdEMAMix and the INT_8/NFLOAT_4 weights don't work; everything else
+# (ADOPT_ADV and the other adv_optm optimizers, AdamW, Prodigy, bf16, float8 and W8A8 weights) doesn't use it.

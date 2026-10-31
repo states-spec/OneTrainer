@@ -4,6 +4,7 @@ Inputs are rounded to the tested dtype before the reference sees them, so the er
 (accumulation, output rounding), not the input rounding. Tolerances are relative errors (norm of the difference /
 norm of the reference) and leave room for the output dtype's rounding.
 """
+import importlib.util
 import math
 
 from modules.util import rocm_sdpa_fix
@@ -375,6 +376,11 @@ def conv_ops(ctx: Ctx, rec: Rec):
 
 @check(SECTION, "bitsandbytes (8-bit optimizer state, INT_8, NFLOAT_4)", gpu_only=True)
 def bitsandbytes_ops(ctx: Ctx, rec: Rec):
+    if importlib.util.find_spec("bitsandbytes") is None:
+        # requirements-rocm10.txt leaves it out: no release has a build for ROCm 10.1 (HIP 7.16) yet
+        rec.skip("bitsandbytes is not installed: *_8BIT optimizers, INT_8 and NFLOAT_4 won't work")
+        return
+
     from modules.module.quantized.LinearNf4 import LinearNf4
 
     import bitsandbytes as bnb

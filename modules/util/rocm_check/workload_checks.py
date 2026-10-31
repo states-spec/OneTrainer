@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-from modules.util.rocm_check.framework import Ctx, Rec, check, finite, rel_err
+from modules.util.rocm_check.framework import Ctx, Rec, check, finite, output_tail, rel_err
 
 import torch
 
@@ -64,8 +64,8 @@ def _train(ctx: Ctx, run_dir: str, config: dict, env: dict[str, str], values: li
     result = subprocess.run(cmd, cwd=_repo_root(ctx), env=run_env, capture_output=True, text=True, timeout=1800)
     with open(os.path.join(run_dir, f"{log_name}.log"), "w", encoding="utf-8") as f:
         f.write(result.stdout + result.stderr)
-    tail = [line for line in (result.stdout + result.stderr).splitlines() if line.strip()][-6:]
-    return {"rc": result.returncode, "seconds": time.perf_counter() - start, "diag": diag, "tail": tail,
+    return {"rc": result.returncode, "seconds": time.perf_counter() - start, "diag": diag,
+            "tail": output_tail(result.stdout + result.stderr),
             "output": os.path.join(run_dir, "output", "lora.safetensors"),
             "samples": os.path.join(run_dir, "workspace", "samples")}
 
@@ -167,7 +167,7 @@ def training_runs(ctx: Ctx, rec: Rec):
         if init["rc"] != 0 or not os.path.exists(init["output"]):
             failed = True
             rec.fail(f"the run that makes the initial LoRA failed (exit code {init['rc']}): "
-                     + " | ".join(init["tail"])[-600:])
+                     + init["tail"])
             return
         initial_lora = init["output"]
 
@@ -186,7 +186,7 @@ def training_runs(ctx: Ctx, rec: Rec):
         for name, r in results.items():
             if r["rc"] != 0 or not os.path.exists(r["output"]):
                 failed = True
-                rec.fail(f"{name}: training failed (exit code {r['rc']}): " + " | ".join(r["tail"])[-600:])
+                rec.fail(f"{name}: training failed (exit code {r['rc']}): " + r["tail"])
                 continue
             w = _weights(r["output"])
             weights[name] = w
@@ -371,7 +371,7 @@ def training_features(ctx: Ctx, rec: Rec):
             tensors = result["tensors"]
             if result["rc"] != 0 or not tensors:
                 failed = True
-                rec.fail(f"{name}: training failed (exit code {result['rc']}): " + " | ".join(result["tail"])[-600:])
+                rec.fail(f"{name}: training failed (exit code {result['rc']}): " + result["tail"])
                 continue
             if not all(finite(t) for t in tensors.values()):
                 failed = True
@@ -392,7 +392,7 @@ def training_features(ctx: Ctx, rec: Rec):
                 if again["rc"] != 0 or not again["tensors"]:
                     failed = True
                     rec.fail(f"{name}: training from the saved LoRA failed (exit code {again['rc']}): "
-                             + " | ".join(again["tail"])[-600:])
+                             + again["tail"])
                     continue
                 common = tensors.keys() & again["tensors"].keys()
                 worst = max(((tensors[k].float() - again["tensors"][k].float()).abs().max().item() for k in common),

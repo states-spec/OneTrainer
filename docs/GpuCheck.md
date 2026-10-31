@@ -84,6 +84,9 @@ results up to the check that was running (the report names it). The exit code is
    with the fused back pass, a restarting scheduler, saves every step with EMA, float8 weights. Each run has to finish
    with finite weights, and each saved LoRA is loaded back as the starting LoRA of a run at learning rate 0, which has
    to save exactly the same tensors (so no layer, adapter part or bundled embedding is lost or misplaced on loading).
+   When a run fails, the folder with every run is kept (the report names it), each with its whole output in
+   `diag.log`. A run that crashes in native code (ROCm aborts the process on a GPU fault or a failed assert in a
+   kernel: exit code -6) shows the runtime's message and where its threads were in the report line.
 
 ## Reading the results
 

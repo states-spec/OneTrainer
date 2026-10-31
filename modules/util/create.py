@@ -146,7 +146,7 @@ def _adv_common_kwargs(optimizer_config: TrainOptimizerConfig, nesterov_default:
     # settings every adv_optm optimizer except Lion_adv takes
     state_precision = _adv_state_precision(optimizer_config.optimizer, optimizer_config.state_precision)
     if optimizer_config.optimizer == Optimizer.SINKSGD_ADV and not optimizer_config.momentum:
-        # without momentum SinkSGD_adv keeps no state to factor, and adv_optm 2.5.13 fails on "factored" then
+        # without momentum SinkSGD_adv keeps no state to factor, and adv_optm 2.5.13-2.5.16 fails on "factored" then
         state_precision = "auto" if state_precision == "factored" else state_precision
     return {
         "orthogonal_gradient": _adv_orthograd_mode(optimizer_config.orthogonal_gradient),
@@ -154,7 +154,7 @@ def _adv_common_kwargs(optimizer_config: TrainOptimizerConfig, nesterov_default:
         "nesterov_coef": optimizer_config.nesterov_coef,
         "state_precision": state_precision,
         "centered_wd": optimizer_config.centered_wd if optimizer_config.centered_wd is not None else 0.0,
-        "centered_wd_mode": optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "float8",
+        "centered_wd_mode": optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "full",
         "spectral_normalization": optimizer_config.spectral_normalization if optimizer_config.spectral_normalization is not None else False,
     }
 
@@ -204,19 +204,31 @@ def _restore_adv_optm_state_dtypes(optimizer: torch.optim.Optimizer, state_dict:
                     state[key] = saved_value.to(device=value.device, copy=True)
 
 
-# adv_optm 2.5.13's Prodigy_adv keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
+# adv_optm's Prodigy_adv (2.5.13-2.5.16) keeps its momentum scaled by d, but its Nesterov step mixes in the unscaled gradient
 # (exp_avg.lerp_(grad, 1 - coef)). That term is 1/d times too large, so every step moves each weight by about
 # 0.1 * lr whatever d is: at lr 1 a LoRA turned to noise within the first steps. The other adv_optm optimizers keep
 # their momentum in gradient units and are not affected.
-_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13): it moves every weight by about "
-                         "0.1 x the learning rate per step regardless of Prodigy's step size, which destroys the model. "
-                         "Turn Nesterov off for PRODIGY_ADV")
+_PRODIGY_ADV_NESTEROV = ("Nesterov momentum is broken in PRODIGY_ADV (adv_optm 2.5.13 and every later release and "
+                         "branch so far): it moves every weight by about 0.1 x the learning rate per step regardless of "
+                         "Prodigy's step size, which destroys the model")
 
 
 def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
-    # settings known to break training; GenericTrainer.start calls it before the model loads
+    # turns off settings known to break training; GenericTrainer.start calls it before the model loads. The UI hides
+    # these settings for the optimizer, so a value saved earlier could not be changed there.
     if optimizer_config.optimizer == Optimizer.PRODIGY_ADV and optimizer_config.nesterov:
-        raise ValueError(_PRODIGY_ADV_NESTEROV + ".")
+        print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The config has it on; it is turned off for this run.")
+        optimizer_config.nesterov = False
+
+    # adv_optm 2.5.13-2.5.16: Adopt_adv's fp16 state fails in its first step together with these (a dtype error,
+    # "expected dtype c10::Half for `end`"), after the model has loaded and the cache is built
+    if optimizer_config.optimizer == Optimizer.ADOPT_ADV and (optimizer_config.state_precision or "").lower() == "fp16":
+        clashing = [title for title, on in (("Nesterov", optimizer_config.nesterov),
+                                            ("Factored 2nd Moment", optimizer_config.factored_2nd)) if on]
+        if clashing:
+            raise ValueError(f'State Precision "fp16" does not work with {" or ".join(clashing)} in ADOPT_ADV: '
+                             f'adv_optm fails in the first step. Pick another State Precision, or turn '
+                             f'{" and ".join(clashing)} off.')
 
 
 def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
@@ -225,6 +237,12 @@ def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
         print(f"Warning: {_PRODIGY_ADV_NESTEROV}. The backup was made with it on; it is turned off for this run.")
         for group in optimizer.param_groups:
             group['nesterov'] = False
+
+
+def _effective_snr_cond(optimizer_config: TrainOptimizerConfig) -> bool:
+    # adv_optm applies SNR preconditioning only with normed momentum and momentum > 0, but its constructor raises when
+    # the option is set without both of them; the UI greys the option out then, so a value saved earlier stays set
+    return bool(optimizer_config.snr_cond and optimizer_config.normed_momentum and (optimizer_config.momentum or 0) > 0)
 
 
 def _restore_kourkoutas_helper(optimizer: torch.optim.Optimizer):
@@ -277,6 +295,24 @@ def _changed_optimizer_settings(group_name: str, saved_group: dict, new_group: d
         if differs:
             changed.append(f"{group_name}.{key}: backup {saved_group[key]!r}, config {new_group[key]!r}")
     return changed
+
+
+def _d_restart_note(optimizer_config: TrainOptimizerConfig, saved_group: dict | None, learning_rate: float) -> str:
+    # Resuming the backup's weights without its optimizer state is a short re-warmup for Adam-like optimizers, but one
+    # that adapts its step size D (Prodigy, D-Adaptation) starts again at Initial D and measures D by how far the
+    # weights move from where it starts. From weights that are already trained they move little: a Chroma LoRA
+    # resumed from an ADOPT_ADV backup kept D at Initial D (1e-4) for 450 steps, a fresh one reached 1e-2.
+    if not optimizer_config.optimizer.is_adaptive:
+        return ""
+    note = (f" {optimizer_config.optimizer} starts its step size D again at Initial D ({optimizer_config.d0}) and "
+            f"estimates it from how far the weights move from the backup's, which are already trained, so D can stay "
+            f"at Initial D and the training barely moves.")
+    saved_lr = None if saved_group is None or saved_group.get("lr") is None \
+        else saved_group["lr"] * saved_group.get("d", 1.0)
+    if saved_lr and learning_rate:
+        note += (f" The backup's run trained with a step size of {saved_lr:.3g}: an Initial D of about "
+                 f"{saved_lr / learning_rate:.3g} (at learning rate {learning_rate:g}) continues at that pace.")
+    return note
 
 
 def create_optimizer(
@@ -907,7 +943,7 @@ def create_optimizer(
                 stochastic_rounding=optimizer_config.stochastic_rounding,
                 stochastic_sign=optimizer_config.stochastic_sign if optimizer_config.stochastic_sign is not None else False,
                 normed_momentum=optimizer_config.normed_momentum if optimizer_config.normed_momentum is not None else False,
-                snr_cond=optimizer_config.snr_cond if optimizer_config.snr_cond is not None else False,
+                snr_cond=_effective_snr_cond(optimizer_config),
                 compiled_optimizer=optimizer_config.compile if optimizer_config.compile is not None else False,
                 **_adv_common_kwargs(optimizer_config),
             )
@@ -923,7 +959,7 @@ def create_optimizer(
                 sinkhorn_iterations=optimizer_config.sinkhorn_iterations if optimizer_config.sinkhorn_iterations is not None else 5,
                 orthogonal_sinkhorn=optimizer_config.orthogonal_sinkhorn if optimizer_config.orthogonal_sinkhorn is not None else False,
                 normed_momentum=optimizer_config.normed_momentum if optimizer_config.normed_momentum is not None else False,
-                snr_cond=optimizer_config.snr_cond if optimizer_config.snr_cond is not None else False,
+                snr_cond=_effective_snr_cond(optimizer_config),
                 geometric_wd=optimizer_config.geometric_wd if optimizer_config.geometric_wd is not None else False,
                 cautious_wd=optimizer_config.cautious_wd if optimizer_config.cautious_wd is not None else False,
                 stochastic_rounding=optimizer_config.stochastic_rounding,
@@ -947,7 +983,7 @@ def create_optimizer(
                 auto_kappa_p=optimizer_config.auto_kappa_p if optimizer_config.auto_kappa_p is not None else False,
                 stochastic_sign=optimizer_config.stochastic_sign if optimizer_config.stochastic_sign is not None else False,
                 centered_wd=optimizer_config.centered_wd if optimizer_config.centered_wd is not None else 0.0,
-                centered_wd_mode=optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "float8",
+                centered_wd_mode=optimizer_config.centered_wd_mode if optimizer_config.centered_wd_mode is not None else "full",
                 spectral_normalization=optimizer_config.spectral_normalization if optimizer_config.spectral_normalization is not None else False,
                 compiled_optimizer=optimizer_config.compile if optimizer_config.compile is not None else False,
             )
@@ -1193,7 +1229,21 @@ def create_optimizer(
             )
 
     if state_dict is not None and optimizer is not None and optimizer_config.optimizer.is_adv_optm:
+        saved_group = (state_dict.get("param_groups") or [None])[0]
+        same_optimizer = (state_dict.get("param_group_optimizer_mapping") or [None])[0] == str(optimizer_config.optimizer)
         state_dict = _check_adv_optm_state_version(state_dict)
+        if state_dict is None and optimizer_config.optimizer.is_adaptive and same_optimizer and saved_group \
+                and "d" in saved_group:
+            # the per-parameter statistics can't be loaded, but Prodigy's step size D is one number per group: keep the
+            # D the run reached (and its step counter), or a resume in the middle of a run starts again at Initial D
+            for group in optimizer.param_groups:
+                for key in ("d", "d_max", "k"):
+                    if key in saved_group:
+                        group[key] = saved_group[key]
+            print(f"Warning: {optimizer_config.optimizer} continues with the backup's step size D "
+                  f"({saved_group['d']:.3g}); its other statistics start again.")
+        elif state_dict is None and (note := _d_restart_note(optimizer_config, saved_group, config.learning_rate)):
+            print("Warning:" + note)
 
     if state_dict is not None and optimizer is not None:
         if 'param_group_mapping' not in state_dict:
@@ -1226,6 +1276,8 @@ def create_optimizer(
             param_groups = []
             state_index = 0
             changed_settings = []
+            # groups that start with a fresh state although training continues from the backup, and why
+            fresh_groups, other_optimizer_group = [], None
 
             for new_group_index, unique_group_name in enumerate(new_group_mapping):
                 if (unique_group_name in old_group_mapping and str(config.optimizer.optimizer) ==
@@ -1249,6 +1301,13 @@ def create_optimizer(
                     old_group['initial_lr'] = new_group['initial_lr']
                 else:
                     # the group state was not saved, initialize with an empty group state
+                    if unique_group_name in old_group_mapping:
+                        old_group_index = old_group_mapping.index(unique_group_name)
+                        fresh_groups.append(f"{unique_group_name} was trained with "
+                                            f"{old_group_optimizer_mapping[old_group_index]}")
+                        other_optimizer_group = other_optimizer_group or old_param_groups[old_group_index]
+                    else:
+                        fresh_groups.append(f"{unique_group_name} is not in the backup")
                     new_group = new_param_groups[new_group_index]
                     new_group['params'][:] = range(state_index, state_index + len(new_group['params']))
                     state_index += len(new_group['params'])
@@ -1256,6 +1315,14 @@ def create_optimizer(
 
             state_dict['state'] = state
             state_dict['param_groups'] = param_groups
+
+            if fresh_groups:
+                # silent before: a run continued from another run's backup trained on with a fresh optimizer state
+                print(f"Warning: the backup's optimizer state is not used for {'; '.join(fresh_groups)}. Training "
+                      f"continues on the backup's weights with a fresh {config.optimizer.optimizer} state."
+                      + (_d_restart_note(optimizer_config, other_optimizer_group, config.learning_rate)
+                         + " Or continue with the optimizer the backup was made with."
+                         if other_optimizer_group is not None and optimizer_config.optimizer.is_adaptive else ""))
 
             if changed_settings:
                 print("Warning: these optimizer settings differ between the backup and the config. The training "
@@ -1281,7 +1348,24 @@ def create_optimizer(
             if optimizer_config.optimizer == Optimizer.PRODIGY_ADV:
                 _disable_prodigy_adv_nesterov(optimizer)
 
+        if optimizer_config.optimizer.is_adaptive:
+            _warn_stuck_d(optimizer_config, optimizer.param_groups[0])
+
     return optimizer
+
+
+def _warn_stuck_d(optimizer_config: TrainOptimizerConfig, group: dict):
+    # Prodigy grows D only while its estimate d_numerator / sum|s| exceeds D, and d_numerator sums
+    # dot(grad, start - weights). Once it is negative (weights that were already trained when the state started, and
+    # every step since moving around that point), D stays at Initial D, and a resumed backup carries that on: the
+    # user's Chroma LoRA resumed such a state run after run (d_numerator -3.7e-5 after 300+ steps, D 1e-4 throughout).
+    d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
+    if d is None or d0 is None or numerator is None or d != d0 or k < 20 or numerator > 0:
+        return
+    print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial D ({d0:g}) "
+          f"after {k} steps, and its estimate is negative (d_numerator {numerator:.3g}), so D will not grow from here: "
+          f"the training continues at learning rate x {d0:g}. For D to adapt again, start without this backup "
+          f"(Continue From Last Backup off, or a new workspace), or set Initial D to the step size you want.")
 
 
 def create_ema(
@@ -1301,6 +1385,7 @@ def create_ema(
         decay=config.ema_decay,
         update_step_interval=config.ema_update_step_interval,
         device=device,
+        ema_stochastic_rounding=config.ema_stochastic_rounding,
     )
 
     if state_dict is not None:

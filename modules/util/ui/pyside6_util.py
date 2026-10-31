@@ -1,5 +1,7 @@
+import html
 import locale
 import os
+import re
 import signal
 import sys
 from abc import ABCMeta
@@ -96,6 +98,18 @@ def _is_dark(app: QApplication, theme: UITheme) -> bool:
     return theme == UITheme.DARK
 
 
+def format_tooltip(text: str) -> str:
+    # wrap tooltips after 45 characters, supported by studys size
+    wrapped = re.sub(r"(.{65}\S*)[ \t]+", r"\1\n", text)
+    return f'<p style="white-space: pre;">{html.escape(wrapped)}</p>'
+
+
+def is_dark_theme() -> bool:
+    # whether the UI shows the dark palette now (with the System theme, whatever the OS reports)
+    app = QApplication.instance()
+    return app is not None and _current_theme is not None and _is_dark(app, _current_theme)
+
+
 def apply_theme(app: QApplication, theme: UITheme):
     global _current_theme
     _current_theme = theme
@@ -137,6 +151,12 @@ def _on_color_scheme_changed(_scheme):
         apply_theme(QApplication.instance(), UITheme.SYSTEM)
 
 
+def _gtk_based_desktop() -> bool:
+    # the desktops for which Qt picks its GTK3 platform theme (QGenericUnixTheme::themeNames)
+    desktops = os.environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":")
+    return any(d in ("GNOME", "X-CINNAMON", "UNITY", "MATE", "XFCE", "LXDE", "PANTHEON") for d in desktops)
+
+
 def create_application() -> QApplication:
     global _light_palette, _default_font_point_size
 
@@ -152,6 +172,20 @@ def create_application() -> QApplication:
     # Qt reads the scale factor once, when the application is created. A value set in the environment wins.
     if settings.ui_scale != 1.0 and "QT_SCALE_FACTOR" not in os.environ:
         os.environ["QT_SCALE_FACTOR"] = str(settings.ui_scale)
+    # On GTK-based desktops Qt loads its GTK3 platform theme, which starts the desktop's GTK (and its threads) inside
+    # the pip-installed Qt. On Fedora GNOME a thread then jumped to a garbage address and crashed the UI after a
+    # dropdown click. Qt's built-in GNOME theme uses no GTK. The GTK theme stays when System File Dialogs is on (it
+    # provides the GTK dialog) or QT_QPA_PLATFORMTHEME is set.
+    if sys.platform.startswith("linux") and not settings.system_file_dialogs \
+            and "QT_QPA_PLATFORMTHEME" not in os.environ and _gtk_based_desktop():
+        os.environ["QT_QPA_PLATFORMTHEME"] = "gnome"
+    # On desktops without the xdg-desktop-portal Settings interface, Qt spams two
+    # "qt.qpa.theme.gnome: dbus reply error ... org.freedesktop.portal.Settings"
+    # lines while probing for the system color scheme. Silence just that category;
+    # the rules string is read when Qt's logging initializes at QApplication init.
+    _gnome_theme_rule = "qt.qpa.theme.gnome=false"
+    existing_rules = os.environ.get("QT_LOGGING_RULES")
+    os.environ["QT_LOGGING_RULES"] = f"{existing_rules};{_gnome_theme_rule}" if existing_rules else _gnome_theme_rule
 
     app = QApplication(sys.argv)
     # QApplication initializes the C locale from the environment (setlocale(LC_ALL, "")), which sets LC_NUMERIC

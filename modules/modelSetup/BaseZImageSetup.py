@@ -74,6 +74,12 @@ class BaseZImageSetup(
                 text_encoder_output=batch.get('text_encoder_hidden_state'),
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability if not deterministic else None,
             )
+
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+
             scaled_latent_image = model.scale_latents(batch['latent_image'])
 
             latent_noise = self._create_noise(scaled_latent_image, config, generator)
@@ -94,6 +100,12 @@ class BaseZImageSetup(
                 timestep,
                 model.noise_scheduler.timesteps,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image, latent_noise, config, generator, rand
+                )
+
             latent_input = scaled_noisy_latent_image.unsqueeze(2).to(dtype=model.train_dtype.torch_dtype())
             latent_input_list = list(latent_input.unbind(dim=0))
 

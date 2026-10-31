@@ -25,6 +25,9 @@ def make_lora_model_saver(
         def __init__(self):
             super().__init__()
 
+        def check_can_save(self, model: model_class, output_model_format: ModelFormat):
+            lora_saver_class().check_can_save(model, output_model_format)
+
         def save(
                 self,
                 model: model_class,

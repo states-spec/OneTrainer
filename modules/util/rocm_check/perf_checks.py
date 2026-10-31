@@ -2,6 +2,7 @@
 switches (BLAS library, TunableOp, MIOpen find mode, allocator settings, torch.compile) change. Numbers only: a slow
 result is reported, not failed, except where a setting breaks.
 """
+import glob
 import os
 import time
 
@@ -123,6 +124,14 @@ def core_bench(ctx: Ctx) -> dict:
         w = _rand(ctx, n, k, scale=k ** -0.5, seed=2)
         g = torch.ones(m, n, device=ctx.device, dtype=torch.bfloat16)
         out[name + " ms"] = ctx.bench(lambda x=x, w=w, g=g: F.linear(x, w).backward(g), iters=10 if ctx.full else 5)
+        # the kernels picked for this process (TunableOp's tuned ones after the timing above) against an fp64 CPU
+        # reference: a switch that is faster but wrong shows here, not only as training runs that drift apart
+        x.grad = None
+        y = F.linear(x, w)
+        y.backward(g)
+        x64, w64 = x.detach().to("cpu", torch.float64), w.to("cpu", torch.float64)
+        out[name + " out err"] = rel_err(y, x64 @ w64.T)
+        out[name + " dx err"] = rel_err(x.grad, g.to("cpu", torch.float64) @ w64)
     q = _rand(ctx, 1, 24, 1536, 128, seed=3).requires_grad_()
     out["attention 24x1536x128 ms"] = ctx.bench(
         lambda: F.scaled_dot_product_attention(q, q, q).backward(torch.ones_like(q)), iters=10 if ctx.full else 5)
@@ -134,6 +143,7 @@ def core_bench(ctx: Ctx) -> dict:
     out["conv first call ms"] = (time.perf_counter() - t1) * 1000
     out["conv fp32 512px ms"] = ctx.bench(lambda: F.conv2d(x, w, padding=1))
     out["total s"] = time.perf_counter() - t0
+    out["blas"] = str(torch.backends.cuda.preferred_blas_library()).removeprefix("_BlasBackend.")
     return out
 
 
@@ -142,14 +152,33 @@ def runtime_switches(ctx: Ctx, rec: Rec):
     rec.info()
     variants = {"default": {}}
     if ctx.is_rocm:
-        variants["rocBLAS instead of hipBLASLt (TORCH_BLAS_PREFER_HIPBLASLT=0)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "0"}
+        # the library PyTorch doesn't pick for this GPU: on gfx1100 the default is already rocBLAS (Cublas), so
+        # TORCH_BLAS_PREFER_HIPBLASLT=0 changed nothing (bit-identical training runs)
+        if "Cublaslt" in str(torch.backends.cuda.preferred_blas_library()):
+            variants["rocBLAS instead of hipBLASLt (TORCH_BLAS_PREFER_HIPBLASLT=0)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "0"}
+        else:
+            variants["hipBLASLt instead of rocBLAS (TORCH_BLAS_PREFER_HIPBLASLT=1)"] = {"TORCH_BLAS_PREFER_HIPBLASLT": "1"}
         variants["MIOPEN_FIND_MODE=FAST"] = {"MIOPEN_FIND_MODE": "FAST"}
+    tuned_before = []
     if ctx.full:
-        variants["TunableOp (PYTORCH_TUNABLEOP_ENABLED=1, tuned in this run)"] = {
+        # TunableOp reads the results file an earlier rocm_check run left in the output folder and tunes only the
+        # shapes it doesn't hold, so its timing includes a tuning only when there was no such file
+        tuned_before = sorted(os.path.basename(f) for f in glob.glob(os.path.join(ctx.out_dir, "rocm_check_tunableop*.csv")))
+        variants["TunableOp (PYTORCH_TUNABLEOP_ENABLED=1)"] = {
             "PYTORCH_TUNABLEOP_ENABLED": "1", "PYTORCH_TUNABLEOP_TUNING": "1",
             "PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS": "100",
             "PYTORCH_TUNABLEOP_FILENAME": os.path.join(ctx.out_dir, "rocm_check_tunableop%d.csv"),
         }
+    # every run starts without the switches compared here, so "default" is PyTorch's default even when the shell sets
+    # one (TunableOp from the environment would also tune into, and read, the training runs' results file)
+    switches = sorted({"TORCH_BLAS_PREFER_HIPBLASLT", "MIOPEN_FIND_MODE", "PYTORCH_TUNABLEOP_ENABLED",
+                       "PYTORCH_TUNABLEOP_TUNING", "PYTORCH_TUNABLEOP_FILENAME",
+                       *(key for env in variants.values() for key in env)})
+    inherited = [f"{key}={os.environ[key]}" for key in switches if key in os.environ]
+    if inherited:
+        rec.line(f"set in this environment and left out of every run here, so that 'default' is PyTorch's default: "
+                 f"{', '.join(inherited)}")
+    variants = {name: {**dict.fromkeys(switches), **env} for name, env in variants.items()}
     if ctx.is_rocm:
         # each run gets an empty MIOpen tuning database, so "conv first call" compares like with like
         for i, env in enumerate(variants.values()):
@@ -171,9 +200,24 @@ def runtime_switches(ctx: Ctx, rec: Rec):
                 ratio = base[key] / value if value else float("nan")
                 parts.append(f"{key.removesuffix(' ms')} {value:.2f} ms" + ("" if name == "default" else f" ({ratio:.2f}x)"))
                 rec.metric(f"{name}: {key}", value)
-        rec.line(f"{name} (total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
-    rec.line("(x = speed relative to default; >1 is faster. TunableOp's first run includes tuning; its results are "
-             "saved in rocm_check_tunableop*.csv)")
+        rec.line(f"{name} (BLAS {result.get('blas', '?')}, total {result.get('total s', 0):.0f} s): " + "; ".join(parts))
+        if "BLAS" in name and result.get("blas") and result.get("blas") == base.get("blas"):
+            # PyTorch keeps its default where it doesn't allow the other library (hipBLASLt on gfx1100 in torch 2.13)
+            rec.line(f"{name}: PyTorch ignored the setting on this GPU and still used {result['blas']}, so the "
+                     f"numbers above are the default library again (run-to-run spread)")
+        errors = {k: v for k, v in result.items() if k.endswith(" err")}
+        if errors:
+            worst = max(errors, key=errors.get)
+            # bf16 inputs: the same limit as the BLAS correctness check
+            rec.expect(errors[worst] < 2e-2, f"{name}: linear forward/backward vs fp64, worst rel err "
+                                             f"{errors[worst]:.2e} ({worst.removesuffix(' err')}, limit 2e-02)")
+    if ctx.full:
+        rec.line(f"TunableOp used the results an earlier run saved in {', '.join(tuned_before)} (delete it to time a "
+                 f"new tuning)" if tuned_before else
+                 "TunableOp tuned in this run (its total includes the tuning); the results are saved in "
+                 "rocm_check_tunableop0.csv and used by the next run")
+    rec.line("(x = speed relative to default; >1 is faster. The default run's times vary between runs, e.g. 0.68 vs "
+             "1.17 ms for the same 4096x640x5120 kernel in two runs on an RX 7900 XTX: compare ratios within a run)")
 
 
 @child_task("alloc_pattern")
@@ -233,6 +277,11 @@ def alloc_checks(ctx: Ctx) -> dict:
        gpu_only=True, note="runs the VAE, conv and (with --full) offloading checks again under each allocator")
 def allocator(ctx: Ctx, rec: Rec):
     rec.info()
+    # PyTorch reads the first of these that is set; wrong results under expandable_segments fail the check only when
+    # this setup uses it, else they warn (it is off by default)
+    current = next((os.environ[k] for k in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+                    if os.environ.get(k)), "")
+    in_use = any(part.replace(" ", "").lower() == "expandable_segments:true" for part in current.split(","))
     default = _without_expandable(os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
     expandable = ",".join(filter(None, [default, "expandable_segments:True"]))
     wrong = {}
@@ -254,14 +303,95 @@ def allocator(ctx: Ctx, rec: Rec):
         wrong[name] = 0
         for check_name, r in result["checks"].items():
             wrong[name] += len(r["failures"])
-            rec.expect(not r["failures"], f"{name}: {check_name}: {r['status']}"
-                       + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else ""))
+            text = f"{name}: {check_name}: {r['status']}" \
+                + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else "")
+            if r["failures"] and name == "expandable_segments" and not in_use:
+                rec.warn(text)
+            else:
+                rec.expect(not r["failures"], text)
     if wrong.get("expandable_segments") and wrong.get("default") == 0:
-        rec.fail("expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
-                 "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)")
+        (rec.fail if in_use else rec.warn)(
+            "expandable_segments gives wrong results on this GPU while the default allocator doesn't: don't set "
+            "OT_EXPANDABLE_SEGMENTS=true (or expandable_segments in PYTORCH_*ALLOC_CONF)"
+            + (". This setup uses it now" if in_use else "; this setup doesn't use it"))
     elif wrong.get("default"):
         rec.fail("wrong results even with the default allocator: a driver, firmware or hardware (VRAM clock, "
                  "undervolt, temperature) problem, not an allocator setting")
+
+
+@child_task("mem_pool_checks")
+def mem_pool_checks(ctx: Ctx) -> dict:
+    """the offloading and disk-streaming checks (their caches and streamed layers go into MemPools) and a model part
+    moved into its own MemPool and back, as BaseModel._move_part does, in this process's OT_ROCM_MEM_POOLS setting,
+    after an allocation churn"""
+    import copy
+
+    from modules.util.rocm_check.framework import REGISTRY
+    from modules.util.torch_util import create_mem_pool, mem_pool_context, supports_mem_pool
+
+    alloc_pattern(ctx)
+    torch.cuda.empty_cache()
+    results = {}
+    for c in REGISTRY:
+        if not c.name.startswith(("layer + activation offloading", "disk streaming")):
+            continue
+        rec = Rec()
+        try:
+            c.fn(ctx, rec)
+        except Exception as e:
+            rec.fail(f"{type(e).__name__}: {e}")
+        results[c.name] = {"status": rec.status, "failures": [line for line in rec.lines if line.startswith("FAIL")]}
+
+    rec = Rec()
+    try:
+        torch.manual_seed(0)
+        part = nn.Sequential(nn.Linear(1024, 4096), nn.GELU(), nn.Linear(4096, 1024))
+        original = copy.deepcopy(part.state_dict())
+        x = _rand(ctx, 256, 1024, dtype=torch.float32, seed=1)
+        expected = copy.deepcopy(part).to(ctx.device)(x)
+        worst, identical = 0.0, True
+        for _ in range(3):
+            pool = create_mem_pool(ctx.device)
+            with mem_pool_context(pool, device=ctx.device):
+                part.to(ctx.device)
+            worst = max(worst, rel_err(part(x), expected))
+            part.to("cpu")
+            del pool
+            torch.cuda.empty_cache()
+            identical &= all(torch.equal(v, original[k]) for k, v in part.state_dict().items())
+        rec.expect(worst < 1e-5, f"output vs a part outside a MemPool rel err {worst:.1e}")
+        rec.expect(identical, "weights bit-identical after 3 moves into a MemPool and back")
+    except Exception as e:
+        rec.fail(f"{type(e).__name__}: {e}")
+    results["model part in its own MemPool"] = {"status": rec.status,
+                                                "failures": [line for line in rec.lines if line.startswith("FAIL")]}
+    return {"checks": results, "pools": supports_mem_pool(ctx.device)}
+
+
+@check(SECTION, "mem_pool: allocations with and without MemPools (OT_ROCM_MEM_POOLS), correctness", gpu_only=True,
+       note="runs the offloading and disk-streaming checks again with and without the MemPools they use")
+def mem_pools(ctx: Ctx, rec: Rec):
+    rec.info()
+    wrong = {}
+    for name, value in (("without MemPools", "false"), ("MemPools", "true")):
+        result = run_child(ctx, "mem_pool_checks", {"OT_ROCM_MEM_POOLS": value}, timeout=1800.0)
+        if "error" in result:
+            rec.fail(f"{name}: {result['error']}")
+            continue
+        if ctx.is_rocm:
+            rec.expect(result["pools"] == (value == "true"),
+                       f"OT_ROCM_MEM_POOLS={value}: OneTrainer {'uses' if result['pools'] else 'does not use'} MemPools")
+        wrong[name] = 0
+        for check_name, r in result["checks"].items():
+            wrong[name] += len(r["failures"])
+            rec.expect(not r["failures"], f"{name}: {check_name}: {r['status']}"
+                       + (f" ({len(r['failures'])} failures, first: {r['failures'][0][6:]})" if r["failures"] else ""))
+    if not ctx.is_rocm:
+        rec.line("(outside ROCm OneTrainer always uses MemPools on the native allocator; OT_ROCM_MEM_POOLS changes nothing)")
+    elif wrong.get("MemPools") and wrong.get("without MemPools") == 0:
+        rec.fail("MemPools give wrong results on this GPU while normal allocations don't: keep OT_ROCM_MEM_POOLS unset")
+    elif wrong.get("MemPools") == 0 and wrong.get("without MemPools") == 0:
+        rec.line("MemPools gave correct results here: OT_ROCM_MEM_POOLS=true can be used")
 
 
 class _DiTBlock(nn.Module):

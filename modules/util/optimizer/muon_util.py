@@ -60,8 +60,7 @@ def build_muon_adam_key_fn(
             case _: # Unmatched cases
                 raise NotImplementedError(f"Default hidden layer patterns are not defined for model type: {model.model_type}")
         filters = [ModuleFilter(p, use_regex=False) for p in default_patterns]
-        if True:
-            print(f"[MuonWithAuxAdam] Using default hidden layer patterns for {model.model_type}.")
+        print(f"[MuonWithAuxAdam] Using default hidden layer patterns for {model.model_type}.")
 
 
     def get_optim_type(param_name: str, p: torch.nn.Parameter) -> str:
@@ -135,6 +134,13 @@ def split_parameters_for_muon(
 
     # If not using AuxAdam, just use the original parameter groups
     if not (MuonWithAuxAdam and layer_key_fn):
+        # Muon orthogonalizes matrices; a 1D parameter (bias, norm weight) failed in the first optimizer step
+        vectors = [(group.get('name'), tuple(p.shape)) for group in parameters for p in group['params']
+                   if p.requires_grad and p.ndim < 2]
+        if vectors:
+            raise ValueError(f"{optimizer_config.optimizer} without the auxiliary Adam can't train 1D parameters "
+                             f"(biases, norm weights): {len(vectors)} of them, e.g. {vectors[0][1]} in "
+                             f"'{vectors[0][0]}'. Turn on MuonWithAuxAdam, or train only 2D weights (e.g. a LoRA).")
         for group in parameters:
             group['optim_type'] = 'muon'
         return parameters, MuonWithAuxAdam

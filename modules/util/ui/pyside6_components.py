@@ -1,5 +1,4 @@
 import contextlib
-import html
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -7,8 +6,8 @@ from typing import Any, Literal
 from modules.util.enum.PathIOType import PathIOType
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.path_util import supported_image_extensions, supported_video_extensions
-from modules.util.ui.pyside6_util import file_dialog_options
-from modules.util.ui.pyside6_validation import PySide6FieldValidator, PySide6PathValidator
+from modules.util.ui.pyside6_util import file_dialog_options, format_tooltip
+from modules.util.ui.pyside6_validation import PySide6FieldValidator, PySide6PathValidator, PySide6RunNameValidator
 from modules.util.ui.UIState import BaseUIState
 
 from PySide6.QtCore import Qt, QTimer
@@ -49,10 +48,7 @@ def _layout(master: QWidget) -> QGridLayout:
 
 
 def _set_tooltip(component: QWidget, text: str, wide: bool = False) -> None:
-    # plain QToolTip text is rendered on a single line; wrap it as rich text
-    # with a max-width so it matches Ctk's wraplength of 180/350px
-    width = 350 if wide else 180
-    component.setToolTip(f'<p style="max-width: {width}px;">{html.escape(text)}</p>')
+    component.setToolTip(format_tooltip(text))
 
 
 def _alignment(sticky: str) -> Qt.AlignmentFlag:
@@ -93,6 +89,9 @@ def _add(
         colspan: int = 1,
 ):
     layout.addWidget(widget, row, col, rowspan, colspan)
+    label_item = layout.itemAtPosition(row, col - 1) if col else None
+    if label_item is not None and isinstance(label_item.widget(), QLabel):
+        widget.setAccessibleName(label_item.widget().text())
     align = _alignment(sticky)
     if align:
         layout.setAlignment(widget, align)
@@ -221,6 +220,9 @@ def entry(
     if tooltip:
         _set_tooltip(component, tooltip, wide_tooltip)
 
+    if validator_factory is None and var_name == "run_name":
+        validator_factory = PySide6RunNameValidator
+
     if validator_factory is not None:
         validator = validator_factory(
             component, var, ui_state, var_name,
@@ -233,6 +235,7 @@ def entry(
             extra_validate=extra_validate,
             required=required,
         )
+    validator.display_name = component.accessibleName() or master.accessibleName() or var_name
     validator.attach()
     component._validator = validator  # type: ignore[attr-defined]
 
@@ -266,7 +269,7 @@ def path_entry(
     _add(_layout(master), frame, row, column, sticky="new", padx=0, pady=0, colspan=columnspan)
 
     def _path_validator_factory(comp, var, state, name, **kw):
-        return PySide6PathValidator(comp, var, state, name, io_type=io_type, **kw)
+        return PySide6PathValidator(comp, var, state, name, io_type=io_type, output_is_dir=mode == "dir", **kw)
 
     entry_component = entry(
         frame, 0, 0, ui_state, var_name,
@@ -808,6 +811,13 @@ def inline_frame(parent: QWidget, row: int, col: int, columnspan: int = 1) -> QW
 
 def set_widget_enabled(widget: QWidget, enabled: bool) -> None:
     widget.setEnabled(enabled)
+
+
+def bind_var_trace(widget: QWidget, ui_state: BaseUIState, var_name: str, command: Callable[[], None]) -> None:
+    # runs command after every change of the var, also programmatic ones (a dropdown's command runs only on user
+    # changes), until the widget is destroyed
+    trace_id = ui_state.add_var_trace(var_name, command)
+    widget.destroyed.connect(lambda: ui_state.remove_var_trace(var_name, trace_id))
 
 
 def set_label_text(label: QLabel, text: str) -> None:

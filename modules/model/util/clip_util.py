@@ -16,8 +16,8 @@ def encode_clip(
         attention_mask: Tensor | None = None,
         add_layer_norm: bool = True,
 ) -> tuple[Tensor, Tensor]:
-    if (add_output and text_encoder_output is None) \
-            or (add_pooled_output and pooled_text_encoder_output is None) \
+    if ((add_output and text_encoder_output is None)
+            or (add_pooled_output and pooled_text_encoder_output is None)) \
             and text_encoder is not None:
 
         text_encoder_output = text_encoder(

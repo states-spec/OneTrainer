@@ -4,29 +4,31 @@ Checks and measures what OneTrainer runs on your GPU, without a model download o
 GPUs on ROCm, where kernels are less tested than on CUDA, but it runs on CUDA too, and partly on the CPU.
 
 ```sh
-./run-cmd.sh rocm_check            # quick mode, about 5 minutes
+./run-cmd.sh rocm_check            # quick mode, about 10 minutes (half of it the tiny-model training runs)
 ./run-cmd.sh rocm_check --full     # more dtypes, sizes and optimizers, plus TunableOp and torch.compile (30-45 min)
 ./run-cmd.sh rocm_check --list     # the checks
 ./run-cmd.sh rocm_check --only sdpa offloading     # checks whose "section / name" contains one of these
 ./run-cmd.sh rocm_check --resolutions 512 768 1024 # sizes for the speed checks (default 512 1024)
+./run-cmd.sh rocm_check --only "training run"      # the tiny-model training runs and component checks (section 5)
 ./run-cmd.sh rocm_check --only vae --vae /path/to/model   # the VAE checks with a real VAE (model folder with vae/,
                                                           # a VAE folder, or a .safetensors file holding a VAE, e.g.
                                                           # ComfyUI models/vae/ae.safetensors; read offline)
 ```
 
-It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to the current
-directory, or to `--out-dir`. The files are rewritten after every check, so a crash or a GPU hang still leaves the
+It writes `rocm_check_report.txt` (for reading) and `rocm_check_report.json` (for comparing runs) to
+`diagnostics/rocm_check/` in the OneTrainer folder, or to `--out-dir`. The files are rewritten after every check, so a crash or a GPU hang still leaves the
 results up to the check that was running (the report names it). The exit code is 1 if any check failed.
 
 ## What it checks
 
-1. **Environment**: PyTorch and its ROCm/CUDA build, the GPU (name, gfx arch, VRAM), the BLAS and flash attention
+1. **Environment**: PyTorch and its ROCm/CUDA build, the GPU (name, gfx arch, VRAM; every visible GPU, so an integrated one shows up), the BLAS and flash attention
    libraries, Triton, bitsandbytes, package versions and the GPU environment variables. It warns when AOTriton
    treats the GPU as experimental (then SDPA silently uses its slow math kernel), and reports whether the float W8A8
    weight types can run.
 2. **Kernel correctness**, each against a float64 reference on the CPU:
    - matmul/linear forward and backward in fp32/bf16/fp16 (hipBLASLt or cuBLAS)
-   - int8 matmul (`torch._int_mm`) and OneTrainer's Triton 8-bit kernel (the W8A8 backward), W8A8 layers
+   - int8 matmul (`torch._int_mm`) and OneTrainer's Triton 8-bit kernel (the W8A8 backward), W8A8 layers, and the
+     bfloat16 A8 layers (timed against a bf16 layer that also computes the weight gradient)
    - scaled dot product attention per backend (flash, memory-efficient and math, PyTorch's kernels called directly)
      and the call OneTrainer makes, per head size used by the model families and the VAEs (up to 512), with no mask, key-padding masks and the query x key mask whose padded rows
      have no valid key (NaN there would spread through the model)
@@ -35,11 +37,15 @@ results up to the check that was running (the report names it). The exit code is
    - bitsandbytes: NFLOAT_4 and INT_8 layers, 8-bit AdamW
    - bf16 stochastic rounding
 3. **Training code** on the GPU:
-   - LoRA, DoRA, LoKr (also with DoRA and the vec trick), LoHa and OFT v2, forward and backward under bf16 autocast
+   - LoRA, DoRA, LoKr (also with DoRA and the vec trick), LoHa and OFT v2 (also with spectral norm clipping), forward and backward under bf16 autocast
    - optimizers built by OneTrainer's own `create_optimizer` (ADV optimizers with every state precision, AdamW,
      schedule-free ones), with a save/resume round trip like a backup
    - layer and activation offloading through the real `LayerOffloadConductor`: same loss and gradients as without
      offloading, only the loaded layers on the GPU after loading, weights bit-identical after load/unload cycles
+   - disk streaming (`stream_from_disk`, on by default): a part streamed from a `.safetensors` file through the model
+     loaders' own streaming code, against the same part loaded into RAM and moved to the GPU: the same weights
+     (bf16 and fp8), loss and gradients, whole and layer by layer under offloading (simplex too), with Cache In RAM
+     on and off, over three unload/reload cycles
    - pinned host memory and transfer speed
    - concurrent VAE encodes, as caching with `dataloader_threads` > 1 does, with and without the lock OneTrainer
      now uses (on ROCm, unlocked concurrent encodes once gave random NaN latents)
@@ -47,9 +53,26 @@ results up to the check that was running (the report names it). The exit code is
      caching runs it), and with MIOpen off or the math attention kernel: it names the first layer that goes wrong
      and which switch avoids it
 4. **Speed**: attention (per backend) and linear layers per model family and resolution, VAE convolutions, and the
-   runtime switches that can only be set at startup, each in a fresh process: rocBLAS instead of hipBLASLt,
+   runtime switches that can only be set at startup, each in a fresh process (and each one's linear layers checked
+   against an fp64 reference, so a faster but wrong setting fails): the BLAS library PyTorch doesn't pick by default
+   (hipBLASLt on an RX 7900 XTX, whose default is rocBLAS),
    TunableOp, MIOpen's find mode, the allocator with `expandable_segments` (its memory use, and the conv, VAE
-   and, with `--full`, offloading checks run again under each allocator), and `torch.compile`.
+   and, with `--full`, offloading checks run again under each allocator; wrong results under `expandable_segments`
+   fail the check only when your setup uses it, and warn otherwise), the offloading and disk-streaming
+   checks and a model part move with and without dedicated MemPools (`OT_ROCM_MEM_POOLS`), and `torch.compile`.
+
+5. **Training run (tiny Chroma)**: a Chroma model with random weights and a small masked, captioned dataset, built
+   offline in a few seconds, trained through the real `scripts/train.py` with the main workload's settings (the Chroma
+   LoRA preset, masked training, EMA, ADOPT_ADV, no warmup, sampling and backups every epoch). Every run is seeded
+   (`OT_SEED`) and writes a diagnostics log ([RunDiagnostics.md](RunDiagnostics.md)). The baseline runs twice (the
+   run-to-run noise), then once per variant that changes how memory is handled: MemPools (`OT_ROCM_MEM_POOLS`, with
+   and without layer offloading), disk streaming off, layer and activation offloading, and resuming from a backup
+   (stopped after two of the three epochs); `--full` adds cache in RAM off, simplex offloading, synchronous
+   offloading and deterministic algorithms. Each variant's saved LoRA and losses are compared with the baseline's,
+   against the noise; it also reports each run's peak and unused memory, allocation retries and part moves. And the
+   model's components on the GPU against the CPU, with the same inputs: the text encoder (captions of two lengths, so
+   the attention is masked), the VAE both ways, and the transformer with a LoRA forward and backward, in fp32 and in
+   bf16 under autocast.
 
 ## Reading the results
 

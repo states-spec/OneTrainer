@@ -249,6 +249,14 @@ class BaseStableDiffusion3Setup(
                 apply_attention_mask=config.transformer.attention_mask,
             ))
 
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+                pooled_text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    pooled_text_encoder_output, config.cep_gamma, generator
+                )
+
             latent_image = batch['latent_image']
             scaled_latent_image = (latent_image - vae_shift_factor) * vae_scaling_factor
 
@@ -273,6 +281,11 @@ class BaseStableDiffusion3Setup(
                 timestep,
                 model.noise_scheduler.timesteps,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image, latent_noise, config, generator, rand
+                )
 
             if config.model_type.has_mask_input() and config.model_type.has_conditioning_image_input():
                 latent_input = torch.concat(

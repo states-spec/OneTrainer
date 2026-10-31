@@ -32,6 +32,15 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
         loss = diff + torch.nn.functional.softplus(-2.0*diff) - torch.log(torch.full(size=diff.size(), fill_value=2.0, dtype=torch.float32, device=diff.device))
         return loss
 
+    @staticmethod
+    def __loss_mask(batch: dict) -> Tensor:
+        mask = batch['latent_mask']
+        if mask.shape[1] > 1:
+            # Flux Fill's mask input holds the 8x8 pixels of each latent pixel in its 64 channels
+            # (ShuffleFluxFillMaskChannels); the loss is weighted by their mean
+            mask = mask.mean(dim=1, keepdim=True)
+        return mask.to(dtype=torch.float32)
+
     def __masked_losses(
             self,
             batch: dict,
@@ -55,7 +64,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                     data['prior_target'].to(dtype=torch.float32),
                     reduction='none'
                 ) if 'prior_target' in data else None,
-                mask=batch['latent_mask'].to(dtype=torch.float32),
+                mask=self.__loss_mask(batch),
                 unmasked_weight=config.unmasked_weight,
                 normalize_masked_area_loss=config.normalize_masked_area_loss,
                 masked_prior_preservation_weight=config.masked_prior_preservation_weight,
@@ -74,7 +83,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                     data['prior_target'].to(dtype=torch.float32),
                     reduction='none'
                 ) if 'prior_target' in data else None,
-                mask=batch['latent_mask'].to(dtype=torch.float32),
+                mask=self.__loss_mask(batch),
                 unmasked_weight=config.unmasked_weight,
                 normalize_masked_area_loss=config.normalize_masked_area_loss,
                 masked_prior_preservation_weight=config.masked_prior_preservation_weight,
@@ -91,7 +100,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                     data['predicted'].to(dtype=torch.float32),
                     data['prior_target'].to(dtype=torch.float32)
                 ) if 'prior_target' in data else None,
-                mask=batch['latent_mask'].to(dtype=torch.float32),
+                mask=self.__loss_mask(batch),
                 unmasked_weight=config.unmasked_weight,
                 normalize_masked_area_loss=config.normalize_masked_area_loss,
                 masked_prior_preservation_weight=config.masked_prior_preservation_weight,
@@ -112,7 +121,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                     reduction='none',
                     delta=config.huber_delta,
                 ) if 'prior_target' in data else None,
-                mask=batch['latent_mask'].to(dtype=torch.float32),
+                mask=self.__loss_mask(batch),
                 unmasked_weight=config.unmasked_weight,
                 normalize_masked_area_loss=config.normalize_masked_area_loss,
                 masked_prior_preservation_weight=config.masked_prior_preservation_weight,
@@ -129,7 +138,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                     predicted_eps=data['predicted'].to(dtype=torch.float32),
                     predicted_var_values=data['predicted_var_values'].to(dtype=torch.float32),
                 ),
-                mask=batch['latent_mask'].to(dtype=torch.float32),
+                mask=self.__loss_mask(batch),
                 unmasked_weight=config.unmasked_weight,
                 normalize_masked_area_loss=config.normalize_masked_area_loss,
             ).mean(mean_dim) * config.vb_loss_strength
@@ -188,11 +197,6 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                 predicted_eps=data['predicted'].to(dtype=torch.float32),
                 predicted_var_values=data['predicted_var_values'].to(dtype=torch.float32),
             ).mean(mean_dim) * config.vb_loss_strength
-
-        if config.masked_training and config.normalize_masked_area_loss:
-            clamped_mask = torch.clamp(batch['latent_mask'], config.unmasked_weight, 1)
-            mask_mean = clamped_mask.mean(mean_dim)
-            losses /= mask_mean
 
         return losses
 
@@ -275,9 +279,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
         self.__alphas_cumprod_fun = alphas_cumprod_fun
 
         if data['loss_type'] == 'target':
-            # TODO: don't disable masked loss functions when has_conditioning_image_input is true.
-            #  This breaks if only the VAE is trained, but was loaded from an inpainting checkpoint
-            if config.masked_training and not config.model_type.has_conditioning_image_input():
+            if config.masked_training:
                 losses = self.__masked_losses(batch, data, config)
             else:
                 losses = self.__unmasked_losses(batch, data, config)
@@ -319,9 +321,7 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
             self.__sigmas = all_timesteps / num_timesteps
 
         if data['loss_type'] == 'target':
-            # TODO: don't disable masked loss functions when has_conditioning_image_input is true.
-            #  This breaks if only the VAE is trained, but was loaded from an inpainting checkpoint
-            if config.masked_training and not config.model_type.has_conditioning_image_input():
+            if config.masked_training:
                 losses = self.__masked_losses(batch, data, config)
             else:
                 losses = self.__unmasked_losses(batch, data, config)

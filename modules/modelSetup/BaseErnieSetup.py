@@ -73,6 +73,11 @@ class BaseErnieSetup(
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability if not deterministic else None,
             )
 
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+
             # Patchify: [B, 32, H, W] -> [B, 128, H/2, W/2]
             patchified_latent_image = model.patchify_latents(batch['latent_image'].float())
             # calculate_timestep_shift patchifies by 2 internally, so its token count is over the raw VAE latent dims.
@@ -98,6 +103,15 @@ class BaseErnieSetup(
                 timestep,
                 model.noise_scheduler.timesteps,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image,
+                    latent_noise,
+                    config,
+                    generator,
+                    rand
+                )
 
             predicted_flow = model.transformer(
                 hidden_states=scaled_noisy_latent_image.to(dtype=model.train_dtype.torch_dtype()),

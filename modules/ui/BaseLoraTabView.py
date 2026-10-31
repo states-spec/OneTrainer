@@ -1,4 +1,5 @@
 
+from modules.ui import dropdown_hints
 from modules.util import path_util
 from modules.util.enum.ModelType import PeftType
 from modules.util.enum.TrainingMethod import TrainingMethod
@@ -16,7 +17,7 @@ class BaseLoraTabView:
                                                    TrainingMethod.LORA)
 
         self.components.label(frame, 0, 0, "Type",
-                              tooltip="The type of low-parameter finetuning method.")
+                              tooltip=dropdown_hints.PEFT_TYPE, wide_tooltip=True)
         self.components.options_kv(frame, 0, 1, controller.get_peft_types(),
                                    ui_state, "peft_type", command=setup_lora_callback)
 
@@ -96,6 +97,16 @@ class BaseLoraTabView:
                                   tooltip="Applies a scaling factor to the learned weights. This ensures that the effective learning rate remains consistent across different block sizes. Without this, different block sizes require significantly different learning rates.")
             self.components.switch(master, 2, 4, ui_state, "oft_scaled")
 
+            # Exact Cayley transform (CANS)
+            self.components.label(master, 3, 3, "Exact Rotation (CANS)",
+                                  tooltip="Computes the exact Cayley rotation with a Chebyshev-accelerated Newton-Schulz iteration (CANS) instead of the default 5-term series, which drifts from an orthogonal matrix at larger rotations. Off by default: PEFT, the reference implementation of this format, applies the 5-term series, so use this only if your inference applies the exact transform. Same file format; the extra cost is small next to the layer itself.")
+            self.components.switch(master, 3, 4, ui_state, "oft_cans")
+
+            # Clip OFT max norm
+            self.components.label(master, 5, 0, "Spectral Norm Clipping",
+                                  tooltip="Limits the spectral norm of the OFT matrix using a power iteration estimate. Start at 0.95 for longer runs. Lower values limit adaptation; keep below 1 for stability. Leave blank to disable (default). The file gets one extra clipped_oft value per layer: inference has to apply the same clipping, or the rotation differs once the limit is reached.")
+            self.components.entry(master, 5, 1, ui_state, "oft_clipped_norm")
+
             # Dropout Percentage
             self.components.label(master, 2, 0, "Dropout Probability",
                                   tooltip="Dropout probability. This percentage of the rotated adapter nodes that will be randomly restored to the base model initial statue. Helps with overfitting. 0 disables, 1 maximum.")
@@ -105,6 +116,11 @@ class BaseLoraTabView:
             self.components.label(master, 3, 0, f"{name} Weight Data Type",
                                   tooltip=f"The {name} weight data type used for training. This can reduce memory consumption, but reduces precision")
             self.components.options_kv(master, 3, 1, controller.get_lora_weight_dtypes(), ui_state, "lora_weight_dtype")
+
+            # DoRA-OFT (DOFT)
+            self.components.label(master, 4, 3, "DoRA OFT (DOFT)",
+                             tooltip="Combines Weight-Decomposed Low-Rank Adaptation (DoRA) with OFT. By decoupling the weight into magnitude and direction components, it achieves the superior training dynamics of DoRA but with the stability and performance of OFT. Because OFT is norm-preserving, it avoids the heavy re-calculations typically found in standard DoRA, resulting in faster training (same speed as standard OFT) and better convergence. The file gets one extra dora_log_multiplier vector per layer, which inference tools that don't know DoRA-OFT leave out.")
+            self.components.switch(master, 4, 4, ui_state, "dora_oft")
 
             # For use with additional embeddings.
             self.components.label(master, 4, 0, "Bundle Embeddings",
@@ -120,7 +136,7 @@ class BaseLoraTabView:
 
             self.components.label(master, 2, 0, "Decomposition Factor",
                                   tooltip="Factor for Kronecker product decomposition. -1 for auto, which is recommended. Changing this drastically affects parameter count.")
-            self.components.entry(master, 2, 1, ui_state, "lokr_decompose_factor")
+            self.components.entry(master, 2, 1, ui_state, "lokr_decompose_factor", extra_validate=lambda _: None)
 
             # alpha
             self.components.label(master, 3, 0, f"{name} alpha",

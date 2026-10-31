@@ -52,10 +52,13 @@ class BaseStableDiffusionSetup(
 
         if config.unet.checkpointing_enabled():
             model.unet.enable_gradient_checkpointing()
+        # conductors go into model.offload_conductor, keyed by the part's stem, where BaseModel._move_part finds them
+        conductors = {
+            "text_encoder": enable_checkpointing_for_clip_encoder_layers(model.text_encoder, config, config.text_encoder),
+        }
         if config.unet.checkpointing_or_offloading_enabled():
-            model.unet_offload_conductor = enable_checkpointing_for_stable_diffusion_unet(model.unet, config, config.unet)
-        model.text_encoder_offload_conductor = \
-            enable_checkpointing_for_clip_encoder_layers(model.text_encoder, config, config.text_encoder)
+            conductors["unet"] = enable_checkpointing_for_stable_diffusion_unet(model.unet, config, config.unet)
+        model.offload_conductor.update({stem: c for stem, c in conductors.items() if c is not None})
 
         if config.force_circular_padding:
             apply_circular_padding_to_conv2d(model.vae)
@@ -162,6 +165,11 @@ class BaseStableDiffusionSetup(
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability if not deterministic else None,
             )
 
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+
             latent_image = batch['latent_image']
             scaled_latent_image = latent_image * vae_scaling_factor
 
@@ -191,6 +199,11 @@ class BaseStableDiffusionSetup(
                 timestep,
                 model.noise_scheduler.betas,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image, latent_noise, config, generator, rand
+                )
 
             if config.model_type.has_mask_input() and config.model_type.has_conditioning_image_input():
                 latent_input = torch.concat(

@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import uuid
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from modules.util.config.BaseConfig import BaseConfig
@@ -23,13 +25,59 @@ from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.ModelFormat import ModelFormat
 from modules.util.enum.ModelType import ModelType, PeftType
 from modules.util.enum.Optimizer import Optimizer
+from modules.util.enum.RunNameMode import RunNameMode
 from modules.util.enum.TimestepDistribution import TimestepDistribution
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.enum.VideoFormat import VideoFormat
 from modules.util.ModelNames import EmbeddingName, ModelNames
 from modules.util.ModelWeightDtypes import ModelWeightDtypes
+from modules.util.time_util import get_string_timestamp
 from modules.util.torch_util import default_device
+
+import friendlywords
+
+TIMESTAMP_SUFFIX_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$")
+
+
+def generate_run_name(training_method, run_name_mode: RunNameMode = RunNameMode.DEFAULT) -> str:
+    mode = str(run_name_mode)
+
+    if mode == str(RunNameMode.FRIENDLY):
+        return friendlywords.generate(2, separator="_")
+
+    method = str(training_method).lower().replace(" ", "_")
+    return f"{method}_{get_string_timestamp()}"
+
+
+def is_auto_run_name_mode(run_name_mode: RunNameMode | str | None) -> bool:
+    return str(run_name_mode or RunNameMode.DEFAULT) != str(RunNameMode.CUSTOM)
+
+
+def prepare_run_name(
+    training_method,
+    run_name_mode: RunNameMode = RunNameMode.DEFAULT,
+    current_run_name: str | None = None,
+    *,
+    is_new_invocation: bool = False,
+) -> str:
+    """Choose the run name to use now, reusing an existing one when allowed and regenerating auto names for a new run."""
+    if is_new_invocation and is_auto_run_name_mode(run_name_mode):
+        return generate_run_name(training_method, run_name_mode)
+
+    if (current_run_name or "").strip():
+        return current_run_name or ""
+
+    return generate_run_name(training_method, run_name_mode)
+
+
+def get_output_model_destination(
+    final_output_dir: str,
+    run_name: str,
+    output_model_format: ModelFormat,
+) -> str:
+    """Build the path for final model output (non workspace ones)"""
+    return os.path.join(final_output_dir, f"{run_name}{output_model_format.file_extension()}")
 
 
 class TrainOptimizerConfig(BaseConfig):
@@ -244,7 +292,7 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("fisher_wd", False, bool, False))
         data.append(("spectral_normalization", False, bool, False))
         data.append(("centered_wd", None, float, True))
-        data.append(("centered_wd_mode", "float8", str, False))  # full, float8, int8, int4
+        data.append(("centered_wd_mode", "full", str, False))  # full, float8, int8, int4
         data.append(("stochastic_sign", False, bool, False))
         data.append(("geometric_wd", False, bool, False))
         data.append(("snr_cond", False, bool, False))
@@ -287,7 +335,9 @@ class TrainModelPartConfig(BaseConfig):
     guidance_scale: float
     gradient_checkpointing: bool
     offload_fraction: float
+    simplex_offloading: bool
     activation_offloading: bool
+    cache_in_ram: bool
 
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(data)
@@ -327,7 +377,9 @@ class TrainModelPartConfig(BaseConfig):
         data.append(("guidance_scale", 1.0, float, False))
         data.append(("gradient_checkpointing", True, bool, False))
         data.append(("offload_fraction", 0.0, float, False))
+        data.append(("simplex_offloading", False, bool, False))
         data.append(("activation_offloading", False, bool, False))
+        data.append(("cache_in_ram", True, bool, False))
 
         return TrainModelPartConfig(data)
 
@@ -367,6 +419,7 @@ class QuantizationConfig(BaseConfig):
     layer_filter: str
     layer_filter_preset: str
     layer_filter_regex: bool
+    fallback_dtype: DataType
     svd_dtype: DataType
     svd_rank: int
     cache_dir: str
@@ -379,6 +432,7 @@ class QuantizationConfig(BaseConfig):
         data.append(("layer_filter", "", str, False))
         data.append(("layer_filter_preset", "full", str, False))
         data.append(("layer_filter_regex", False, bool, False))
+        data.append(("fallback_dtype", DataType.BFLOAT_16, DataType, False))
         data.append(("svd_dtype", DataType.NONE, DataType, False))
         data.append(("svd_rank", 16, int, False))
         data.append(("cache_dir", None, str, True))
@@ -402,6 +456,8 @@ class TrainConfig(BaseConfig):
     validate_after_unit: TimeUnit
     continue_last_backup: bool
     prevent_overwrites: bool
+    auto_correct_input: bool
+    run_name_mode: RunNameMode
     include_train_config: ConfigPart
 
     # multi-GPU
@@ -416,10 +472,12 @@ class TrainConfig(BaseConfig):
     base_model_name: str
     output_dtype: DataType
     output_model_format: ModelFormat
-    output_model_destination: str
+    run_name: str
+    final_output_dir: str
     async_offloading: bool
     force_circular_padding: bool
     compile: bool
+    stream_from_disk: bool
 
     # data settings
     concept_file_name: str
@@ -444,6 +502,7 @@ class TrainConfig(BaseConfig):
     ema: EMAMode
     ema_decay: float
     ema_update_step_interval: int
+    ema_stochastic_rounding: bool
     dataloader_threads: int
     train_device: str
     temp_device: str
@@ -476,6 +535,10 @@ class TrainConfig(BaseConfig):
     offset_noise_weight: float
     generalized_offset_noise: bool
     perturbation_noise_weight: float
+    ciop_noise_weight: float
+    ciop_p: float
+    cep_gamma: float
+    k_noise_sampling: int
     rescale_noise_scheduler_to_zero_terminal_snr: bool
     force_v_prediction: bool
     force_epsilon_prediction: bool
@@ -563,7 +626,10 @@ class TrainConfig(BaseConfig):
     # oft
     oft_block_size: int
     oft_block_share: bool
+    dora_oft: bool
     oft_scaled: bool
+    oft_cans: bool
+    oft_clipped_norm: float | None
 
     # lokr
     lokr_dim: int
@@ -603,7 +669,6 @@ class TrainConfig(BaseConfig):
     save_every: int
     save_every_unit: TimeUnit
     save_skip_first: int
-    save_filename_prefix: str
 
     # secrets - not saved into config file
     secrets: SecretsConfig
@@ -611,7 +676,7 @@ class TrainConfig(BaseConfig):
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(
             data,
-            config_version=12,
+            config_version=13,
             config_migrations={
                 0: self.__migration_0,
                 1: self.__migration_1,
@@ -625,6 +690,7 @@ class TrainConfig(BaseConfig):
                 9: self.__migration_9,
                 10: self.__migration_10,
                 11: self.__migration_11,
+                12: self.__migration_12,
             }
         )
 
@@ -908,6 +974,34 @@ class TrainConfig(BaseConfig):
 
         return migrated_data
 
+    def __migration_12(self, data: dict) -> dict:
+        # upstream's __migration_11 (preview-2): the fork had already used version 12 for the adv_optm renames, so the
+        # output naming moved one version up here. setdefault keeps run_name/final_output_dir of a config upstream saved
+        # at its own version 12. Upstream's __migration_12 (13 there) only sets oft_clipped_norm to its default None,
+        # which a missing key keeps anyway, so the fork stays at 13.
+        migrated = deepcopy(data)
+        # The input-tooltips branch also used v11, before per-component offloading.
+        if any(key in migrated for key in (
+            "gradient_checkpointing", "enable_activation_offloading",
+            "enable_async_offloading", "layer_offload_fraction",
+        )):
+            migrated = self.__migration_10(migrated)
+
+        destination = migrated.pop("output_model_destination", "")
+        prefix = migrated.pop("save_filename_prefix", "").rstrip("-").strip()
+        migrated.pop("output_name_as_run_name", None)
+        path = Path(destination)
+        directory_output = migrated.get("output_model_format") in ("DIFFUSERS", "INTERNAL")
+        if not directory_output and (destination.endswith(("/", "\\")) or os.path.isdir(destination)):
+            name, directory = "", str(path)
+        else:
+            name = path.name if directory_output else path.stem
+            directory = str(path.parent) if destination else "models"
+        migrated.setdefault("run_name", prefix or (name if destination else ""))
+        migrated.setdefault("final_output_dir", directory)
+        migrated.setdefault("run_name_mode", "CUSTOM" if migrated["run_name"] else "DEFAULT")
+        return migrated
+
     def model_part_configs(self) -> list[TrainModelPartConfig]:
         # the per-part configs for the components this model_type actually has. Avoids "phantom" parts whose
         # fields keep their defaults (train=True) or migrated offload values but don't exist in the model.
@@ -933,6 +1027,18 @@ class TrainConfig(BaseConfig):
             self.lora_weight_dtype,
             self.embedding_weight_dtype,
         )
+
+    def cache_in_ram(self) -> dict[str, bool]:
+        return {part: getattr(self, part).cache_in_ram for part in self.model_type.model_parts()}
+
+    def part_trained_in_place(self, part: TrainModelPartConfig) -> bool:
+        # True iff a FINE_TUNE run updates this part's base weights. 'train' defaults True even for parts the
+        # architecture can't train (e.g. a frozen text encoder), so also require the model type to list the part as
+        # trainable. Gates the offload/streaming modes that would silently discard in-place weight updates.
+        if self.training_method != TrainingMethod.FINE_TUNE or not part.train:
+            return False
+        name = next((p for p in self.model_type.model_parts() if getattr(self, p) is part), None)
+        return name in self.model_type.trainable_parts()
 
     def model_names(self) -> ModelNames:
         return ModelNames(
@@ -962,6 +1068,17 @@ class TrainConfig(BaseConfig):
     def train_any_output_embedding(self) -> bool:
         return ((self.training_method == TrainingMethod.EMBEDDING) and self.embedding.is_output_embedding) \
             or any((embedding.train and embedding.is_output_embedding) for embedding in self.additional_embeddings)
+
+    def streams_from_disk(self) -> bool:
+        # stream_from_disk materializes a part only on a device of another type than the temp device
+        # (disk_stream.stream_module_to): with both on the CPU (CPU training) a streamed part stayed a meta skeleton
+        # and failed later ("Cannot copy out of meta tensor"). The weights end up in RAM then anyway, so load normally.
+        return self.stream_from_disk and self.train_device.split(":")[0] != self.temp_device.split(":")[0]
+
+    def uses_custom_conditioning_image(self) -> bool:
+        # only models with a conditioning image input (inpainting) use it; elsewhere the extra image was still loaded
+        # and augmented, which changed the random augmentations without any other effect
+        return self.custom_conditioning_image and self.model_type.has_conditioning_image_input()
 
     def train_text_encoder_or_embedding(self) -> bool:
         return (self.text_encoder.train and self.training_method != TrainingMethod.EMBEDDING
@@ -993,19 +1110,50 @@ class TrainConfig(BaseConfig):
         else:
             return self.additional_embeddings
 
-    def get_last_backup_path(self) -> str | None:
+    def get_timestamped_run_name(self) -> str:
+        """Name a saved artifact by its save time without duplicating the default run timestamp."""
+        timestamp = get_string_timestamp()
+        if self.run_name_mode == RunNameMode.DEFAULT and TIMESTAMP_SUFFIX_RE.search(self.run_name):
+            return TIMESTAMP_SUFFIX_RE.sub(timestamp, self.run_name)
+        return f"{self.run_name}-{timestamp}"
+
+    def _backup_sort_key(self, backup_path: str) -> tuple[str, int, int, int, str]:
+        """Sort by the backup name's embedded timestamp/progress (not mtime), so copied backups and prefixes dont change which backup is considered latest."""
+        backup_name = os.path.basename(backup_path)
+        prefix_and_timestamp, separator, progress_suffix = backup_name.rpartition("-backup-")
+
+        if separator:
+            timestamp_match = TIMESTAMP_SUFFIX_RE.search(prefix_and_timestamp)
+            progress_parts = progress_suffix.split("-")
+
+            if timestamp_match and len(progress_parts) == 3 and all(part.isdigit() for part in progress_parts):
+                global_step, epoch, epoch_step = (int(part) for part in progress_parts)
+                return (timestamp_match.group(1), global_step, epoch, epoch_step, backup_name)
+
+        return ("", -1, -1, -1, backup_name)
+
+    def get_backup_paths(self) -> list[str]:
         backups_path = os.path.join(self.workspace_dir, "backup")
-        if os.path.exists(backups_path):
-            backup_paths = sorted(
-                [path for path in os.listdir(backups_path) if
-                 os.path.isdir(os.path.join(backups_path, path))],
-                reverse=True,
-            )
+        if not os.path.exists(backups_path):
+            return []
 
-            if backup_paths:
-                last_backup_path = backup_paths[0]
-                return os.path.join(backups_path, last_backup_path)
+        backup_paths = [
+            os.path.join(backups_path, path)
+            for path in os.listdir(backups_path)
+            if os.path.isdir(os.path.join(backups_path, path))
+        ]
+        backup_paths.sort(key=self._backup_sort_key, reverse=True)
 
+        return backup_paths
+
+    def get_last_backup_path(self) -> str | None:
+        # a backup writes its meta.json last (InternalModelSaverMixin), so a folder without it was cut off, e.g. by a
+        # crash while it was written. Resuming it loaded at most the weights, without the optimizer state and progress
+        for backup_path in self.get_backup_paths():
+            if os.path.isfile(os.path.join(backup_path, "meta.json")):
+                return backup_path
+            print(f"Skipping the incomplete backup '{backup_path}' (no meta.json: it was not finished, e.g. because "
+                  f"of a crash while it was written)")
         return None
 
     def to_settings_dict(self, secrets: bool) -> dict:
@@ -1071,6 +1219,8 @@ class TrainConfig(BaseConfig):
         data.append(("validate_after_unit", TimeUnit.EPOCH, TimeUnit, False))
         data.append(("continue_last_backup", False, bool, False))
         data.append(("prevent_overwrites", False, bool, False))
+        data.append(("auto_correct_input", True, bool, False))
+        data.append(("run_name_mode", RunNameMode.DEFAULT, RunNameMode, False))
         data.append(("include_train_config", ConfigPart.NONE, ConfigPart, False))
 
         #multi-GPU
@@ -1085,10 +1235,12 @@ class TrainConfig(BaseConfig):
         data.append(("base_model_name", "stable-diffusion-v1-5/stable-diffusion-v1-5", str, False))
         data.append(("output_dtype", DataType.FLOAT_32, DataType, False))
         data.append(("output_model_format", ModelFormat.SAFETENSORS, ModelFormat, False))
-        data.append(("output_model_destination", "models/model.safetensors", str, False))
+        data.append(("run_name", "", str, False))
+        data.append(("final_output_dir", "models", str, False))
         data.append(("async_offloading", True, bool, False))
         data.append(("force_circular_padding", False, bool, False))
         data.append(("compile", False, bool, False))
+        data.append(("stream_from_disk", True, bool, False))
 
         # data settings
         data.append(("concept_file_name", "training_concepts/concepts.json", str, False))
@@ -1111,6 +1263,7 @@ class TrainConfig(BaseConfig):
         data.append(("ema", EMAMode.OFF, EMAMode, False))
         data.append(("ema_decay", 0.999, float, False))
         data.append(("ema_update_step_interval", 5, int, False))
+        data.append(("ema_stochastic_rounding", True, bool, False))
         data.append(("dataloader_threads", 2, int, False))
         data.append(("train_device", default_device.type, str, False))
         data.append(("temp_device", "cpu", str, False))
@@ -1138,6 +1291,10 @@ class TrainConfig(BaseConfig):
         data.append(("offset_noise_weight", 0.0, float, False))
         data.append(("generalized_offset_noise", False, bool, False))
         data.append(("perturbation_noise_weight", 0.0, float, False))
+        data.append(("ciop_noise_weight", 0.0, float, False))
+        data.append(("ciop_p", 0.8, float, False))
+        data.append(("cep_gamma", 0.0, float, False))
+        data.append(("k_noise_sampling", 1, int, False))
         data.append(("rescale_noise_scheduler_to_zero_terminal_snr", False, bool, False))
         data.append(("force_v_prediction", False, bool, False))
         data.append(("force_epsilon_prediction", False, bool, False))
@@ -1282,7 +1439,10 @@ class TrainConfig(BaseConfig):
         # oft
         data.append(("oft_block_size", 32, int, False))
         data.append(("oft_block_share", False, bool, False))
+        data.append(("dora_oft", False, bool, False))
         data.append(("oft_scaled", False, bool, False))
+        data.append(("oft_cans", False, bool, False))
+        data.append(("oft_clipped_norm", None, float, True))
 
         # lokr
         data.append(("lokr_dim", 16, int, False))
@@ -1319,7 +1479,6 @@ class TrainConfig(BaseConfig):
         data.append(("save_every", 0, int, False))
         data.append(("save_every_unit", TimeUnit.NEVER, TimeUnit, False))
         data.append(("save_skip_first", 0, int, False))
-        data.append(("save_filename_prefix", "", str, False))
 
         # secrets
         secrets = SecretsConfig.default_values()

@@ -1,5 +1,6 @@
 import math
 from abc import ABCMeta
+from random import Random
 
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.TimestepDistribution import TimestepDistribution
@@ -83,12 +84,15 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             timestep: Tensor | None = None,
             betas: Tensor | None = None,
     ) -> Tensor:
-        noise = torch.randn(
-            source_tensor.shape,
-            generator=generator,
-            device=config.train_device,
-            dtype=source_tensor.dtype
-        )
+        if config.k_noise_sampling > 1:
+            noise = self._immiscible_noise(source_tensor, config, generator)
+        else:
+            noise = torch.randn(
+                source_tensor.shape,
+                generator=generator,
+                device=config.train_device,
+                dtype=source_tensor.dtype
+            )
 
         if config.offset_noise_weight > 0:
             offset_noise = torch.randn(
@@ -118,6 +122,92 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             noise = noise + (config.perturbation_noise_weight * perturbation_noise)
 
         return noise
+
+    @staticmethod
+    @torch.no_grad()
+    def _immiscible_noise(source_tensor: Tensor, config: TrainConfig, generator: Generator) -> Tensor:
+        """
+        Immiscible Diffusion, noise oversampling: draws k_noise_sampling noise candidates per sample and keeps the one
+        nearest to the sample's latent (L2).
+        Paper: "Improved Immiscible Diffusion: Accelerate Diffusion Training by Reducing Its Miscibility"
+        (https://arxiv.org/abs/2505.18521)
+        """
+        batch_size = source_tensor.shape[0]
+        candidates = torch.randn(
+            (batch_size, config.k_noise_sampling, *source_tensor.shape[1:]),
+            generator=generator,
+            device=config.train_device,
+            dtype=source_tensor.dtype
+        )
+
+        # float32: a latent has up to ~1e5 elements, so squared distances overflow float16 (and CPU cdist has no
+        # float16 kernel). Distances of ~360 differ by ~1 between candidates at 512 px, well within float32.
+        latents = source_tensor.flatten(start_dim=1).float().unsqueeze(1)
+        distance = (candidates.flatten(start_dim=2).float() - latents).square().sum(dim=-1)
+        index = distance.argmin(dim=1)
+
+        return candidates[torch.arange(batch_size, device=candidates.device), index]
+
+    @staticmethod
+    def _apply_conditional_embedding_perturbation(
+            embedding: Tensor | list[Tensor],
+            gamma: float,
+            generator: Generator,
+    ) -> Tensor | list[Tensor]:
+        """
+        Applies Conditional Embedding Perturbation (CEP-U) as per Equation (8).
+        Paper: "Slight Corruption in Pre-training Data Makes Better Diffusion Models"
+
+        Adds delta ~ U(-gamma/sqrt(d), gamma/sqrt(d)) to the text encoder output, d being its last dimension.
+        """
+        def _perturb(tensor: Tensor) -> Tensor:
+            scale = gamma / math.sqrt(tensor.shape[-1])
+            noise = torch.rand(tensor.shape, generator=generator, device=tensor.device, dtype=tensor.dtype)
+            return tensor + (noise * 2.0 - 1.0) * scale
+
+        if isinstance(embedding, list):
+            return [_perturb(emb) for emb in embedding]
+        return _perturb(embedding)
+
+    def _apply_ciop(
+            self,
+            noisy_latent: Tensor,
+            target_noise: Tensor,
+            config: TrainConfig,
+            generator: Generator,
+            rand: Random
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Applies Coordinated Input-Output Perturbation (CIOP) as per Equation (6) & (7).
+        Paper: "Bidirectional Noise Injection: Enhancing Diffusion Models via Coordinated Input-Output Perturbation"
+
+        With probability p, injects independent Gaussian noise to both the noisy latent
+        and the target noise.
+        """
+        ciop_noise_weight = config.ciop_noise_weight
+        if ciop_noise_weight != 0:
+            prob_threshold = torch.rand(1, generator=generator, device=noisy_latent.device)
+
+            apply_mask = (prob_threshold < config.ciop_p).to(noisy_latent.dtype)
+
+            eps_in = torch.randn(
+                noisy_latent.shape,
+                generator=generator,
+                device=noisy_latent.device,
+                dtype=noisy_latent.dtype
+            ) * (ciop_noise_weight * apply_mask)
+
+            eps_out = torch.randn(
+                target_noise.shape,
+                generator=generator,
+                device=target_noise.device,
+                dtype=target_noise.dtype
+            ) * (ciop_noise_weight * apply_mask)
+
+            noisy_latent = noisy_latent + eps_in
+            target_noise = target_noise + eps_out
+
+        return noisy_latent, target_noise
 
     def _get_timestep_discrete(
             self,

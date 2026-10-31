@@ -5,7 +5,6 @@ import traceback
 from modules.model.StableDiffusionModel import StableDiffusionModel
 from modules.modelLoader.mixin.HFModelLoaderMixin import HFModelLoaderMixin
 from modules.modelLoader.mixin.SDConfigModelLoaderMixin import SDConfigModelLoaderMixin
-from modules.util import create
 from modules.util.config.TrainConfig import QuantizationConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.NoiseScheduler import NoiseScheduler
@@ -73,21 +72,25 @@ class StableDiffusionModelLoader(
             vae_model_name: str,
             quantization: QuantizationConfig,
     ):
-        tokenizer = CLIPTokenizer.from_pretrained(
+        model.tokenizer = CLIPTokenizer.from_pretrained(
             base_model_name,
             subfolder="tokenizer",
         )
+        model.orig_tokenizer = copy.deepcopy(model.tokenizer)
 
         noise_scheduler = DDIMScheduler.from_pretrained(
             base_model_name,
             subfolder="scheduler",
         )
-        noise_scheduler = create.create_noise_scheduler(
+        # imported here: create imports every model loader, this one too, so a module-level import made
+        # this module fail to import on its own (circular import)
+        from modules.util import create
+        model.noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=noise_scheduler,
         )
 
-        text_encoder = self._load_transformers_sub_module(
+        model.text_encoder, _ = self._load_text_encoder(
             CLIPTextModel,
             weight_dtypes.text_encoder,
             weight_dtypes.train_dtype,
@@ -95,23 +98,15 @@ class StableDiffusionModelLoader(
             "text_encoder",
         )
 
-        if vae_model_name:
-            vae = self._load_diffusers_sub_module(
-                AutoencoderKL,
-                weight_dtypes.vae,
-                weight_dtypes.train_dtype,
-                vae_model_name,
-            )
-        else:
-            vae = self._load_diffusers_sub_module(
-                AutoencoderKL,
-                weight_dtypes.vae,
-                weight_dtypes.train_dtype,
-                base_model_name,
-                "vae",
-            )
+        model.vae = self._load_vae(
+            AutoencoderKL,
+            weight_dtypes.vae,
+            weight_dtypes.train_dtype,
+            base_model_name,
+            vae_model_name,
+        )
 
-        unet = self._load_diffusers_sub_module(
+        model.unet = self._load_diffusers_sub_module(
             UNet2DConditionModel,
             weight_dtypes.unet,
             weight_dtypes.train_dtype,
@@ -120,26 +115,16 @@ class StableDiffusionModelLoader(
             quantization,
         )
 
-        image_depth_processor = DPTImageProcessor.from_pretrained(
+        model.image_depth_processor = DPTImageProcessor.from_pretrained(
             base_model_name,
             subfolder="feature_extractor",
         ) if model_type.has_depth_input() else None
 
-        depth_estimator = DPTForDepthEstimation.from_pretrained(
+        model.depth_estimator = DPTForDepthEstimation.from_pretrained(
             base_model_name,
             subfolder="depth_estimator",
             torch_dtype=weight_dtypes.unet.torch_dtype(),  # TODO: use depth estimator dtype
         ) if model_type.has_depth_input() else None
-
-        model.model_type = model_type
-        model.tokenizer = tokenizer
-        model.orig_tokenizer = copy.deepcopy(tokenizer)
-        model.noise_scheduler = noise_scheduler
-        model.text_encoder = text_encoder
-        model.vae = vae
-        model.unet = unet
-        model.image_depth_processor = image_depth_processor
-        model.depth_estimator = depth_estimator
 
     def __fix_nai_model(self, state_dict: dict) -> dict:
         # fix for loading models with an empty state_dict key
@@ -182,6 +167,7 @@ class StableDiffusionModelLoader(
             load_safety_checker=False,
         )
 
+        from modules.util import create
         noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=pipeline.scheduler,
@@ -239,6 +225,7 @@ class StableDiffusionModelLoader(
             from_safetensors=True,
         )
 
+        from modules.util import create
         noise_scheduler = create.create_noise_scheduler(
             noise_scheduler=NoiseScheduler.DDIM,
             original_noise_scheduler=pipeline.scheduler,
@@ -280,8 +267,16 @@ class StableDiffusionModelLoader(
             model_names: ModelNames,
             weight_dtypes: ModelWeightDtypes,
             quantization: QuantizationConfig,
+            stream_from_disk: bool = False,
     ):
         stacktraces = []
+
+        if stream_from_disk:
+            # SD 1.5 / 2.x checkpoints are almost always single-file (.ckpt/.safetensors loaded via
+            # download_from_original_stable_diffusion_ckpt), which builds a full pipeline and can't stream from a meta
+            # skeleton. The diffusers-subfolder path could stream its unet/text encoder like SDXL does, but wasn't
+            # wired up, as this is legacy. So the toggle is ignored here.
+            print(f"Warning: 'stream from disk' is not supported for {model_type}; loading the model fully into RAM.")
 
         model.sd_config = self._load_sd_config(model_type, model_names.base_model)
         model.sd_config_filename = self._get_sd_config_name(model_type, model_names.base_model)
@@ -306,7 +301,7 @@ class StableDiffusionModelLoader(
 
         if model_names.base_model.endswith(".ckpt"):
             try:
-                self.__load_ckpt(model, model_type, weight_dtypes, model_names.base_model, model_names.vae_model)
+                self.__load_ckpt(model, model_type, weight_dtypes, model_names.base_model, model_names.vae_model, quantization)
                 print("Warning: Legacy code is used to load ckpt files. Some features may not be supported.")
                 return
             except Exception:

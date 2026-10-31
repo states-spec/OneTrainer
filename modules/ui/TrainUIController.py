@@ -1,13 +1,14 @@
-import datetime
+import datetime as dt
 import json
 import os
+import re
 import subprocess
-import sys
 import threading
 import time
 import traceback
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlparse
 
 import scripts.generate_debug_report
 from modules.ui.BaseTrainUIView import BaseTrainUIView
@@ -18,13 +19,22 @@ from modules.ui.VideoToolUIController import VideoToolUIController
 from modules.util import create
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
-from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.TrainConfig import (
+    TrainConfig,
+    get_output_model_destination,
+    is_auto_run_name_mode,
+    prepare_run_name,
+)
 from modules.util.profiling_util import PeakMemoryRecorder
-from modules.util.torch_util import torch_gc
+from modules.util.tensorboard_util import TensorboardProcess
+from modules.util.torch_util import print_fragmentation, torch_gc
 from modules.util.TrainProgress import TrainProgress
 from modules.util.ui.validation import flush_and_validate_all
 
 import torch
+
+from huggingface_hub import parse_hf_uri
+from huggingface_hub.errors import GatedRepoError
 
 
 class TrainUIController:
@@ -70,7 +80,7 @@ class TrainUIController:
 
         total_eta = spent_total / steps_done_this_session * remaining_steps
 
-        td = datetime.timedelta(seconds=total_eta)
+        td = dt.timedelta(seconds=total_eta)
         days = td.days
         hours, remainder = divmod(td.seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -91,13 +101,11 @@ class TrainUIController:
         if self.always_on_tensorboard_subprocess:
             self._stop_always_on_tensorboard()
 
-        tensorboard_executable = os.path.join(os.path.dirname(sys.executable), "tensorboard")
         tensorboard_log_dir = os.path.join(self.train_config.workspace_dir, "tensorboard")
 
         os.makedirs(Path(tensorboard_log_dir).absolute(), exist_ok=True)
 
         tensorboard_args = [
-            tensorboard_executable,
             "--logdir",
             tensorboard_log_dir,
             "--port",
@@ -109,8 +117,9 @@ class TrainUIController:
             tensorboard_args.append("--bind_all")
 
         try:
-            self.always_on_tensorboard_subprocess = subprocess.Popen(tensorboard_args)
+            self.always_on_tensorboard_subprocess = TensorboardProcess(tensorboard_args)
         except Exception:
+            traceback.print_exc()
             self.always_on_tensorboard_subprocess = None
 
     def _stop_always_on_tensorboard(self):
@@ -230,20 +239,40 @@ class TrainUIController:
             traceback.print_exc()
             self.view.on_update_status(f"Error generating debug package: {e}")
 
+    def __report_gated_repo_error(self, error: GatedRepoError) -> str:
+        # name the repo that refused access, from the request URL (/api/models/<repo>/auth-check, /<repo>/resolve/...):
+        # it can be another part's (e.g. HiDream's Llama text encoder) while the base model is public
+        response = getattr(error, "response", None)
+        match = re.search(r"^/(?:api/models/)?([^/]+/[^/]+)/(?:auth-check|resolve)(?:/|$)",
+                          urlparse(str(response.url)).path if response is not None else "")
+        if match:
+            model_name = match.group(1)
+        else:
+            model_name = self.train_config.base_model_name
+            if not os.path.exists(model_name):
+                model_name = parse_hf_uri(model_name if "://" in model_name else f"hf://{model_name}").id
+        concise_auth_error = f"Cannot access {model_name} on Hugging Face: access to it is gated.\nRequest access on its model page and set the Hugging Face token (model tab) of an account that has it."
+        print(concise_auth_error)
+        return concise_auth_error
+
     def __training_thread_function(self):
         with PeakMemoryRecorder("training run", enabled=False):
             self.__training_thread_function_impl()
 
     def __training_thread_function_impl(self):
         error_caught = False
+        error_message = "Error: check the console for details"
 
         self.training_callbacks = TrainCallbacks(
             on_update_train_progress=self.on_update_train_progress,
             on_update_status=self.on_update_status,
         )
 
-        trainer = create.create_trainer(self.train_config, self.training_callbacks, self.training_commands, reattach=self.view.get_cloud_reattach())
+        trainer = None
         try:
+            # in the try: a trainer that couldn't be created (e.g. a workspace folder that can't be made) ended the
+            # thread here, and the UI stayed on "Stop Training" until it was restarted
+            trainer = create.create_trainer(self.train_config, self.training_callbacks, self.training_commands, reattach=self.view.get_cloud_reattach())
             trainer.start()
             if self.train_config.cloud.enabled:
                 self.view.sync_cloud_secrets()
@@ -252,13 +281,25 @@ class TrainUIController:
             self.start_total_steps = None
             self.start_time = time.monotonic()
             trainer.train()
-        except Exception:
+        except Exception as e:
             if self.train_config.cloud.enabled:
                 self.view.sync_cloud_secrets()
             error_caught = True
-            traceback.print_exc()
+            if isinstance(e, GatedRepoError):
+                error_message = self.__report_gated_repo_error(e)
+            else:
+                traceback.print_exc()
+        finally:
+            if self.train_config.debug_mode or os.environ.get("OT_DEBUG_PROFILES") == "1":
+                print_fragmentation("training run, at stop")
 
-        trainer.end()
+        if trainer is not None:
+            try:
+                trainer.end()
+            except Exception:
+                # e.g. the final save on a full disk: the UI has to get back to idle either way
+                error_caught = True
+                traceback.print_exc()
 
         # clear gpu memory
         del trainer
@@ -268,8 +309,12 @@ class TrainUIController:
         torch.clear_autocast_cache()
         torch_gc()
 
+        # after trainer.end() + torch_gc: quantifies the reserved-but-unallocated that persists through unload
+        if self.train_config.debug_mode or os.environ.get("OT_DEBUG_PROFILES") == "1":
+            print_fragmentation("training run, after unload")
+
         if error_caught:
-            self.on_update_status("Error: check the console for details")
+            self.on_update_status(error_message)
         else:
             self.on_update_status("Stopped")
 
@@ -279,19 +324,36 @@ class TrainUIController:
         if self.train_config.tensorboard_always_on and not self.always_on_tensorboard_subprocess:
             self.view.schedule_on_main_thread(self._start_always_on_tensorboard)
 
+    def sync_run_name(self, *, is_new_invocation: bool = False):
+        name = prepare_run_name(self.train_config.training_method, self.train_config.run_name_mode,
+                                self.train_config.run_name, is_new_invocation=is_new_invocation)
+        self.view.ui_state.get_var("run_name").set(name)
+
+    def __run_name_used(self) -> bool:
+        # an automatic (Default/Friendly) name that a run has already used, e.g. one that came with a loaded config:
+        # every run writes its config to workspace/config/<run name>.json, and the final model to <run name>.<ext>
+        config = self.train_config
+        if not is_auto_run_name_mode(config.run_name_mode) or not config.run_name.strip():
+            return False
+        return os.path.exists(get_output_model_destination(
+            config.final_output_dir, config.run_name, config.output_model_format)) \
+            or os.path.exists(os.path.join(config.workspace_dir, "config", f"{config.run_name}.json"))
+
     def start_training(self):
         if self.training_thread is None:
-            self.view.save_default()
-
             errors = flush_and_validate_all()
             if errors:
                 self.view.show_validation_errors(errors)
                 return
 
+            # automatic names are new for each run: one a run already used would make this run write over its model
+            self.sync_run_name(is_new_invocation=self.__run_name_used())
+
             if self.train_config.clear_cache_before_training and self.train_config.latent_caching \
                     and not self.view.confirm("Clear Cache Before Training", "Clear cache?"):
                 return
 
+            self.view.save_default()
             self.view.on_training_started()
 
             if self.train_config.tensorboard and not self.train_config.tensorboard_always_on and self.always_on_tensorboard_subprocess:

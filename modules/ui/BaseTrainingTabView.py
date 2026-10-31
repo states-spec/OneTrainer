@@ -1,14 +1,24 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Any
 
+from modules.ui import dropdown_hints
 from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.LearningRateScaler import LearningRateScaler
 from modules.util.enum.LearningRateScheduler import LearningRateScheduler
 from modules.util.enum.LossScaler import LossScaler
-from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.enum.TimestepDistribution import TimestepDistribution
+from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.ui.validation_helpers import check_range, validate_resolution
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class BaseTrainingTabView(ABC):
@@ -306,7 +316,7 @@ class BaseTrainingTabView(ABC):
             delattr(self, "lr_scheduler_comp")
             delattr(self, "lr_scheduler_adv_comp")
         self.components.label(frame, 1, 0, "Learning Rate Scheduler",
-                              tooltip="Learning rate scheduler that automatically changes the learning rate during training")
+                              tooltip=dropdown_hints.LEARNING_RATE_SCHEDULER, wide_tooltip=True)
         _, d = self.components.options_adv(frame, 1, 1, [str(x) for x in list(LearningRateScheduler)], ui_state,
                                            "learning_rate_scheduler",
                                            command=self.restore_scheduler,
@@ -360,7 +370,7 @@ class BaseTrainingTabView(ABC):
 
         # clip grad norm
         self.components.label(frame, 10, 0, "Clip Grad Norm",
-                              tooltip="Clips the gradient norm. Leave empty to disable gradient clipping.")
+                              tooltip="Clips the gradient norm. Leave empty to disable gradient clipping. With Fused Back Pass, each parameter's gradient is clipped to this norm on its own instead of all gradients together.")
         self.components.entry(frame, 10, 1, ui_state, "clip_grad_norm")
 
     def __create_base2_frame(self, master, row, controller, ui_state, video_training_enabled: bool = False,
@@ -377,27 +387,34 @@ class BaseTrainingTabView(ABC):
 
         # ema
         self.components.label(frame, row, 0, "EMA",
-                              tooltip="EMA averages the training progress over many steps, better preserving different concepts in big datasets")
+                              tooltip=dropdown_hints.EMA_MODE, wide_tooltip=True)
         self.components.options(frame, row, 1, [str(x) for x in list(EMAMode)], ui_state, "ema")
         row += 1
 
         # ema decay
-        self.components.label(frame, row, 0, "EMA Decay",
-                              tooltip="Decay parameter of the EMA model. Higher numbers will average more steps. For datasets of hundreds or thousands of images, set this to 0.9999. For smaller datasets, set it to 0.999 or even 0.998")
-        self.components.entry(frame, row, 1, ui_state, "ema_decay",
+        ema_settings = [self.components.label(frame, row, 0, "EMA Decay",
+                              tooltip="Decay parameter of the EMA model. Higher numbers will average more steps. For datasets of hundreds or thousands of images, set this to 0.9999. For smaller datasets, set it to 0.999 or even 0.998")]
+        ema_settings.append(self.components.entry(frame, row, 1, ui_state, "ema_decay",
                               extra_validate=check_range(lower=0.5, upper=1,
-                                                        message="EMA decay must be between 0.5 and 1"))
+                                                        message="EMA decay must be between 0.5 and 1")))
         row += 1
 
         # ema update step interval
-        self.components.label(frame, row, 0, "EMA Update Step Interval",
-                              tooltip="Number of steps between EMA update steps")
-        self.components.entry(frame, row, 1, ui_state, "ema_update_step_interval")
+        ema_settings.append(self.components.label(frame, row, 0, "EMA Update Step Interval",
+                              tooltip="Number of steps between EMA update steps"))
+        ema_settings.append(self.components.entry(frame, row, 1, ui_state, "ema_update_step_interval"))
         row += 1
+
+        # ema stochastic rounding
+        ema_settings.append(self.components.label(frame, row, 0, "EMA Stochastic Rounding",
+                              tooltip="Uses stochastic rounding for the EMA update when the EMA weights are stored in bfloat16 (weights trained in bfloat16). Without it, most EMA updates are smaller than bfloat16's precision and get lost. No effect on float32 weights."))
+        ema_settings.append(self.components.switch(frame, row, 1, ui_state, "ema_stochastic_rounding"))
+        row += 1
+        self._enable_while(ui_state, "ema", lambda value: str(value) != str(EMAMode.OFF), ema_settings)
 
         # train dtype
         self.components.label(frame, row, 0, "Train Data Type",
-                              tooltip="The mixed precision data type used for training. This can increase training speed, but reduces precision")
+                              tooltip=dropdown_hints.TRAIN_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, row, 1, [
             ("float32", DataType.FLOAT_32),
             ("float16", DataType.FLOAT_16),
@@ -455,11 +472,23 @@ class BaseTrainingTabView(ABC):
             self.components.entry(frame, row, 1, ui_state, f"{part}.offload_fraction")
             row += 1
 
+            simplex_label = self.components.label(frame, row, 0, "Simplex Offloading",
+                                  tooltip="Holds this component's weights in a single RAM buffer, so an offloaded layer never has to be copied back to RAM. Faster, but costs RAM for the whole component instead of only its offloaded layers. Needs \"Stream From Disk\" (model page) and a layer offload fraction above 0. Not available for a fully fine-tuned component.")
+            simplex_switch = self.components.switch(frame, row, 1, ui_state, f"{part}.simplex_offloading")
+            self._enable_while(ui_state, "stream_from_disk", bool, [simplex_label, simplex_switch])
+            row += 1
+
         if supports_activation_offloading:
             self.components.label(frame, row, 0, "Offload Activations",
                                   tooltip="Offloads this component's activations to CPU during training to reduce VRAM usage")
             self.components.switch(frame, row, 1, ui_state, f"{part}.activation_offloading")
             row += 1
+
+        cache_label = self.components.label(frame, row, 0, "Cache In RAM",
+                              tooltip="Keeps this model part's streamed weights in RAM between uses instead of re-reading them from disk on every use, trading RAM for loading speed. Only has an effect when \"Stream From Disk\" (model page) is enabled.")
+        cache_switch = self.components.switch(frame, row, 1, ui_state, f"{part}.cache_in_ram")
+        self._enable_while(ui_state, "stream_from_disk", bool, [cache_label, cache_switch])
+        row += 1
 
         return row
 
@@ -716,97 +745,162 @@ class BaseTrainingTabView(ABC):
                               supports_dynamic_timestep_shifting: bool = False):
         frame = self.components.section_frame(master, row)
 
+        row = 0
+
         # offset noise weight
-        self.components.label(frame, 0, 0, "Offset Noise Weight",
+        self.components.label(frame, row, 0, "Offset Noise Weight",
                               tooltip="The weight of offset noise added to each training step")
-        self.components.entry(frame, 0, 1, ui_state, "offset_noise_weight")
+        self.components.entry(frame, row, 1, ui_state, "offset_noise_weight")
+        row += 1
 
         if supports_generalized_offset_noise:
             # generalized offset noise weight
-            self.components.label(frame, 1, 0, "Generalized Offset Noise",
-                                  tooltip="Per-timestep 'brightness knob' instead of a fixed offset - steadier training, better starts, and improved very dark/bright images. Compatible with V-pred and Eps-pred. Start with 0.02 and adjust as needed.",
-                                  wraplength=130)
-            self.components.switch(frame, 1, 1, ui_state, "generalized_offset_noise")
+            self._enable_while(ui_state, "offset_noise_weight", lambda value: _number(value) > 0, [
+                self.components.label(frame, row, 0, "Generalized Offset Noise",
+                                      tooltip="Per-timestep 'brightness knob' instead of a fixed offset - steadier training, better starts, and improved very dark/bright images. Compatible with V-pred and Eps-pred. Start with 0.02 and adjust as needed. Only used with an Offset Noise Weight above 0.",
+                                      wraplength=130),
+                self.components.switch(frame, row, 1, ui_state, "generalized_offset_noise"),
+            ])
+            row += 1
+
+        # CIOP noise weight
+        self.components.label(frame, row, 0, "I/O Noise Weight",
+                         tooltip="Applies Coordinated Input-Output Perturbation (CIOP) to each training step.")
+        self.components.entry(frame, row, 1, ui_state, "ciop_noise_weight")
+        row += 1
+
+        # CIOP noise probability
+        self._enable_while(ui_state, "ciop_noise_weight", lambda value: _number(value) != 0, [
+            self.components.label(frame, row, 0, "I/O Noise Probability",
+                                  tooltip="The probability of I/O perturbation noise for each training step. Only used with an I/O Noise Weight other than 0."),
+            self.components.entry(frame, row, 1, ui_state, "ciop_p"),
+        ])
+        row += 1
+
+        # CEP gamma
+        self.components.label(frame, row, 0, "Text Embedding Noise",
+                              tooltip="Conditional Embedding Perturbation (CEP): adds slight uniform noise to the text encoder outputs in each training step, scaled by 1/sqrt(embedding size). The paper uses 1. 0 disables it.")
+        self.components.entry(frame, row, 1, ui_state, "cep_gamma")
+        row += 1
+
+        # Immiscible Diffusion noise candidates
+        self.components.label(frame, row, 0, "Noise Candidates",
+                              tooltip="Immiscible Diffusion: draws this many noise samples per image and trains on the one nearest to the image's latent, which can speed up training. 1 disables it (plain Gaussian noise). Each candidate costs one extra noise sample of memory and compute.")
+        self.components.entry(frame, row, 1, ui_state, "k_noise_sampling")
+        row += 1
 
         # perturbation noise weight
-        self.components.label(frame, 2, 0, "Perturbation Noise Weight",
+        self.components.label(frame, row, 0, "Perturbation Noise Weight",
                               tooltip="The weight of perturbation noise added to each training step")
-        self.components.entry(frame, 2, 1, ui_state, "perturbation_noise_weight")
+        self.components.entry(frame, row, 1, ui_state, "perturbation_noise_weight")
+        row += 1
 
         # timestep distribution
-        self.components.label(frame, 3, 0, "Timestep Distribution",
-                              tooltip="Selects the function to sample timesteps during training",
+        self.components.label(frame, row, 0, "Timestep Distribution",
+                              tooltip=dropdown_hints.TIMESTEP_DISTRIBUTION,
                               wide_tooltip=True)
-        self.components.options_adv(frame, 3, 1, [str(x) for x in list(TimestepDistribution)], ui_state,
+        self.components.options_adv(frame, row, 1, [str(x) for x in list(TimestepDistribution)], ui_state,
                                     "timestep_distribution",
                                     adv_command=self.open_timestep_distribution)
+        row += 1
 
         # min noising strength
-        self.components.label(frame, 4, 0, "Min Noising Strength",
+        self.components.label(frame, row, 0, "Min Noising Strength",
                               tooltip="Specifies the minimum noising strength used during training. This can help to improve composition, but prevents finer details from being trained")
-        self.components.entry(frame, 4, 1, ui_state, "min_noising_strength", required=True)
+        self.components.entry(frame, row, 1, ui_state, "min_noising_strength", required=True)
+        row += 1
 
         # max noising strength
-        self.components.label(frame, 5, 0, "Max Noising Strength",
+        self.components.label(frame, row, 0, "Max Noising Strength",
                               tooltip="Specifies the maximum noising strength used during training. This can be useful to reduce overfitting, but also reduces the impact of training samples on the overall image composition")
-        self.components.entry(frame, 5, 1, ui_state, "max_noising_strength", required=True)
+        self.components.entry(frame, row, 1, ui_state, "max_noising_strength", required=True)
+        row += 1
 
         # noising weight
-        self.components.label(frame, 6, 0, "Noising Weight",
+        self.components.label(frame, row, 0, "Noising Weight",
                               tooltip="Controls the weight parameter of the timestep distribution function. Use the preview to see more details.")
-        self.components.entry(frame, 6, 1, ui_state, "noising_weight", required=True)
+        self.components.entry(frame, row, 1, ui_state, "noising_weight", required=True)
+        row += 1
 
         # noising bias
-        self.components.label(frame, 7, 0, "Noising Bias",
+        self.components.label(frame, row, 0, "Noising Bias",
                               tooltip="Controls the bias parameter of the timestep distribution function. Use the preview to see more details.")
-        self.components.entry(frame, 7, 1, ui_state, "noising_bias", required=True)
+        self.components.entry(frame, row, 1, ui_state, "noising_bias", required=True)
+        row += 1
 
         # timestep shift
-        self.components.label(frame, 8, 0, "Timestep Shift",
-                              tooltip="Shift the timestep distribution. Use the preview to see more details.")
-        self.components.entry(frame, 8, 1, ui_state, "timestep_shift", required=True)
+        timestep_shift = [
+            self.components.label(frame, row, 0, "Timestep Shift",
+                                  tooltip="Shift the timestep distribution. Use the preview to see more details. Ignored while Dynamic Timestep Shifting is on."),
+            self.components.entry(frame, row, 1, ui_state, "timestep_shift", required=True),
+        ]
+        row += 1
 
         if supports_dynamic_timestep_shifting:
             # dynamic timestep shifting
-            self.components.label(frame, 9, 0, "Dynamic Timestep Shifting",
+            self.components.label(frame, row, 0, "Dynamic Timestep Shifting",
                                   tooltip="Dynamically shift the timestep distribution based on resolution. If enabled, the shifting parameters are taken from the model's scheduler configuration and Timestep Shift is ignored. For Ideogram, the shifting instead follows the model's own resolution-aware sampling schedule. Note: For Z-Image, the dynamic shifting parameters are likely wrong and unknown. Use with care or set your own, fixed shift.", wide_tooltip=True)
-            self.components.switch(frame, 9, 1, ui_state, "dynamic_timestep_shifting")
+            self.components.switch(frame, row, 1, ui_state, "dynamic_timestep_shifting")
+            row += 1
+            self._enable_while(ui_state, "dynamic_timestep_shifting", lambda value: not value, timestep_shift)
+
+    def _enable_while(self, ui_state, var_name: str, rule: Callable[[Any], bool], widgets: list):
+        # greys the widgets out while rule(value) is false for the var's value; follows every change, preset loads too
+        def update(*args):
+            enabled = rule(ui_state.get_var(var_name).get())
+            for widget in widgets:
+                self.components.set_widget_enabled(widget, enabled)
+
+        if widgets:
+            self.components.bind_var_trace(widgets[0], ui_state, var_name, update)
+            update()
 
     def __create_masked_frame(self, master, row, ui_state):
         frame = self.components.section_frame(master, row)
+        config = ui_state.obj
+        # every model weights the loss with the mask; inpainting models (mask and conditioning image inputs) also take
+        # it as an input and drop it at random (Unmasked Probability). Settings a model can't use are not shown. The
+        # tab is rebuilt when the model type or the training method changes.
+        conditioning_input = config.model_type.has_conditioning_image_input()
+        needs_masked_training = []
 
         # Masked Training
         self.components.label(frame, 0, 0, "Masked Training",
-                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample.")
+                              tooltip="Masks the training samples to let the model focus on certain parts of the image. When enabled, one mask image is loaded for each training sample: <image name>-masklabel.png in the same folder (always PNG). An image without one is trained on the whole image. Inpainting models also take the mask as an input.")
         self.components.switch(frame, 0, 1, ui_state, "masked_training")
 
-        # unmasked probability
-        self.components.label(frame, 1, 0, "Unmasked Probability",
-                              tooltip="When masked training is enabled, specifies the number of training steps done on unmasked samples")
-        self.components.entry(frame, 1, 1, ui_state, "unmasked_probability",
-                              extra_validate=check_range(lower=0, upper=1, message="Unmasked probability must be between 0 and 1"))
+        if config.model_type.has_mask_input():
+            # unmasked probability
+            needs_masked_training.append(self.components.label(frame, 1, 0, "Unmasked Probability",
+                                  tooltip="When masked training is enabled, specifies the share of samples trained without a mask: an all-white mask input and a loss over the whole image. Only for inpainting models, which take the mask as an input."))
+            needs_masked_training.append(self.components.entry(frame, 1, 1, ui_state, "unmasked_probability",
+                                  extra_validate=check_range(lower=0, upper=1, message="Unmasked probability must be between 0 and 1")))
 
         # unmasked weight
-        self.components.label(frame, 2, 0, "Unmasked Weight",
-                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region")
-        self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
-                              extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1"))
+        needs_masked_training.append(self.components.label(frame, 2, 0, "Unmasked Weight",
+                              tooltip="When masked training is enabled, specifies the loss weight of areas outside the masked region (1: the whole image counts fully)."))
+        needs_masked_training.append(self.components.entry(frame, 2, 1, ui_state, "unmasked_weight",
+                              extra_validate=check_range(lower=0, upper=1, message="Unmasked weight must be between 0 and 1")))
 
         # normalize masked area loss
-        self.components.label(frame, 3, 0, "Normalize Masked Area Loss",
-                              tooltip="When masked training is enabled, normalizes the loss for each sample based on the sizes of the masked region")
-        self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss")
+        needs_masked_training.append(self.components.label(frame, 3, 0, "Normalize Masked Area Loss",
+                              tooltip="When masked training is enabled, divides the loss of each sample by its mask's average weight, so samples with small masks are not learned more weakly"))
+        needs_masked_training.append(self.components.switch(frame, 3, 1, ui_state, "normalize_masked_area_loss"))
 
-        # masked prior preservation
-        self.components.label(frame, 4, 0, "Masked Prior Preservation Weight",
-                              tooltip="Preserves regions outside the mask using the original untrained model output as a target. Only available for LoRA training. If enabled, use a low unmasked weight.")
-        self.components.entry(frame, 4, 1, ui_state, "masked_prior_preservation_weight",
-                              extra_validate=check_range(lower=0, upper=1, message="Masked prior preservation weight must be between 0 and 1"))
+        if config.training_method == TrainingMethod.LORA:
+            # masked prior preservation
+            needs_masked_training.append(self.components.label(frame, 4, 0, "Masked Prior Preservation Weight",
+                                  tooltip="Preserves regions outside the mask using the original untrained model output as a target. Only available for LoRA training. If enabled, use a low unmasked weight."))
+            needs_masked_training.append(self.components.entry(frame, 4, 1, ui_state, "masked_prior_preservation_weight",
+                                  extra_validate=check_range(lower=0, upper=1, message="Masked prior preservation weight must be between 0 and 1")))
 
-        # use custom conditioning image
-        self.components.label(frame, 5, 0, "Custom Conditioning Image",
-                              tooltip="When custom conditioning image is enabled, will use png postfix with -condlabel instead of automatically generated.It's suitable for special scenarios, such as object removal, allowing the model to learn a certain behavior concept")
-        self.components.switch(frame, 5, 1, ui_state, "custom_conditioning_image")
+        if conditioning_input:
+            # use custom conditioning image
+            self.components.label(frame, 5, 0, "Custom Conditioning Image",
+                                  tooltip="When custom conditioning image is enabled, will use png postfix with -condlabel instead of automatically generated. It's suitable for special scenarios, such as object removal, allowing the model to learn a certain behavior concept. Only for inpainting models, which take the conditioning image as an input.")
+            self.components.switch(frame, 5, 1, ui_state, "custom_conditioning_image")
+
+        self._enable_while(ui_state, "masked_training", bool, needs_masked_training)
 
     def __create_loss_frame(self, master, row, controller, ui_state,
                             supports_vb_loss: bool = False):
@@ -845,11 +939,8 @@ class BaseTrainingTabView(ABC):
 
         # Loss Weight function
         self.components.label(frame, 6, 0, "Loss Weight Function",
-                              tooltip="Choice of loss weight function. Can help the model learn details more accurately.")
-        self.components.options(frame, 6, 1, [str(x) for x in list(LossWeight)
-                                              if x.supports_flow_matching() == controller.is_flow_matching()
-                                              or x == LossWeight.CONSTANT
-                                              ],
+                              tooltip=dropdown_hints.LOSS_WEIGHT_FUNCTION, wide_tooltip=True)
+        self.components.options(frame, 6, 1, [str(x) for x in controller.config.model_type.supported_loss_weights()],
                                 ui_state, "loss_weight_fn")
 
         row = 7

@@ -34,8 +34,11 @@ def _run_models_one_at_a_time(definition: list):
         def get_item(variation: int, index: int, requested_name: str = None,
                      module=module, unlocked_get_item=module.get_item):
             for name in module.get_inputs():
-                # loads the input into the previous modules' (thread-local) item cache, outside the lock
-                module._get_previous_item(variation, name, index)
+                # loads the input into the previous modules' (thread-local) item cache, outside the lock. Optional
+                # inputs that aren't used are listed as None (EncodeT5Text without an attention mask: Flux.1, SD3,
+                # HiDream), and the module itself skips them
+                if name is not None:
+                    module._get_previous_item(variation, name, index)
             with lock:
                 return unlocked_get_item(variation, index, requested_name)
 

@@ -30,13 +30,12 @@ _NONE_IS_A_SETTING = {
 
 
 def adv_state_precisions(optimizer: Optimizer) -> list[str]:
-    # the adv_optm state_precision modes that train with this optimizer. In adv_optm 2.5.13 "fp16" fails in every
-    # optimizer except Adopt_adv (a dtype error, or NaN in Prodigy_adv), and "factored" always fails in AdaMuon_adv
+    # the adv_optm state_precision modes that train with this optimizer. In adv_optm 2.5.13-2.5.16 "fp16" fails in
+    # every optimizer except Adopt_adv (a dtype error, or NaN in Prodigy_adv). "factored" failed in AdaMuon_adv up to
+    # 2.5.13 (original_shape unbound) and works since 2.5.16
     precisions = ["auto", "fp32", "factored", "bf16_sr", "int8_sr"]
     if optimizer == Optimizer.ADOPT_ADV:
         precisions.append("fp16")
-    if optimizer == Optimizer.ADAMUON_ADV:
-        precisions.remove("factored")
     return precisions
 
 
@@ -153,17 +152,12 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0,
         "initial_accumulator_value": 0,
         "eps": 1e-10,
-        "optim_bits": 32,
-        "min_8bit_size": 4096,
-        "percentile_clipping": 100,
-        "block_wise": True,
     },
     Optimizer.ADAGRAD_8BIT: {
         "lr_decay": 0,
         "weight_decay": 0,
         "initial_accumulator_value": 0,
         "eps": 1e-10,
-        "optim_bits": 8,
         "min_8bit_size": 4096,
         "percentile_clipping": 100,
         "block_wise": True,
@@ -262,9 +256,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
-        "optim_bits": 32,
-        "min_8bit_size": 4096,
-        "percentile_clipping": 100,
         "max_unorm": 0.02,
     },
     Optimizer.LARS_8BIT: {
@@ -291,10 +282,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0,
         "momentum": 0,
         "centered": False,
-        "optim_bits": 32,
-        "min_8bit_size": 4096,
-        "percentile_clipping": 100,
-        "block_wise": True,
     },
     Optimizer.RMSPROP_8BIT: {
         "alpha": 0.99,
@@ -311,9 +298,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "dampening": 0,
         "weight_decay": 0,
         "nesterov": False,
-        "min_8bit_size": 4096,
-        "percentile_clipping": 100,
-        "block_wise": True,
     },
     Optimizer.SCHEDULE_FREE_ADAMW: {
         "beta1": 0.9,
@@ -494,7 +478,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "fisher_wd": False,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "state_precision": "auto",
         "factored_2nd": False,
         "stochastic_rounding": True,
@@ -516,7 +500,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "fisher_wd": False,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "state_precision": "auto",
         "factored_2nd": False,
         "stochastic_rounding": True,
@@ -538,7 +522,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "fisher_wd": False,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "state_precision": "auto",
         "factored_2nd": False,
         "stochastic_rounding": True,
@@ -552,8 +536,6 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "d_limiter": False,
         "use_atan2": False,
         "orthogonal_gradient": "disabled",
-        "nesterov": False,
-        "nesterov_coef": None,
         "spectral_normalization": False,
         "kourkoutas_beta": False,
     },
@@ -566,7 +548,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         # the settings window fills left, right, left, ...: this order keeps the dropdowns in the left column, where
         # the entries make it wide (in the right column, next to only checkboxes, they were squeezed)
         "stochastic_rounding": True,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "compile": False,
         "state_precision": "auto",
         "fused_back_pass": False,
@@ -579,21 +561,21 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "spectral_normalization": False,
     },
     Optimizer.SINKSGD_ADV: {
-        "momentum": 0.0,
+        "momentum": 0.95,
         "cautious_wd": False,
         "weight_decay": 0.0,
         "geometric_wd": False,
         "centered_wd": 0.0,
         # dropdowns in the left column, see SIGNSGD_ADV
         "stochastic_rounding": True,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "compile": False,
         "state_precision": "auto",
         "fused_back_pass": False,
         "sinkhorn_iterations": 5,
         "orthogonal_sinkhorn": False,
         "orthogonal_gradient": "disabled",
-        "nesterov": False,
+        "nesterov": True,
         "nesterov_coef": None,
         "normed_momentum": False,
         "snr_cond": False,
@@ -605,7 +587,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "cautious_wd": False,
         "weight_decay": 0.0,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
@@ -620,7 +602,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "cautious_wd": False,
         "weight_decay": 0.0,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "state_precision": "auto",
         "accelerated_ns": False,
         "ns_steps": 5,
@@ -652,7 +634,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "cautious_wd": False,
         "weight_decay": 0.0,
         "centered_wd": 0.0,
-        "centered_wd_mode": "float8",
+        "centered_wd_mode": "full",
         "state_precision": "auto",
         "factored_2nd": False,
         "accelerated_ns": False,
@@ -669,7 +651,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "muon_adam_lr": 1e-6,
         "muon_te1_adam_lr": None,
         "muon_te2_adam_lr": None,
-        "nesterov": False,
+        "nesterov": True,
         "nesterov_coef": None,
         "use_atan2": False,
         "normuon_variant": True,

@@ -12,12 +12,11 @@ from modules.util.enum.ModelType import ModelType
 from modules.util.enum.NoiseScheduler import NoiseScheduler
 from modules.util.enum.VideoFormat import VideoFormat
 from modules.util.image_util import load_image
+from modules.util.tqdm_util import tqdm
 
 import torch
 from torch import nn
 from torchvision.transforms import transforms
-
-from tqdm import tqdm
 
 
 @factory.register(BaseModelSampler, ModelType.STABLE_DIFFUSION_XL_10_BASE)
@@ -285,7 +284,6 @@ class StableDiffusionXLSampler(BaseModelSampler):
                         dtype=self.model.vae_train_dtype.torch_dtype(),
                         device=self.train_device,
                     )
-                    conditioning_image = conditioning_image
                     latent_conditioning_image = vae.encode(conditioning_image).latent_dist.mode() * vae.config.scaling_factor
                     latent_mask = torch.ones(
                         size=(1, 1, latent_conditioning_image.shape[2], latent_conditioning_image.shape[3]),

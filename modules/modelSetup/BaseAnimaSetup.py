@@ -72,10 +72,14 @@ class BaseAnimaSetup(
                 rand=rand,
                 tokens=batch.get("tokens"),
                 tokens_mask=batch.get("tokens_mask"),
-                text_encoder_output=batch['text_encoder_hidden_state'] \
-                    if 'text_encoder_hidden_state' in batch and not config.train_text_encoder_or_embedding() else None,
+                text_encoder_output=batch.get('text_encoder_hidden_state'),
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability if not deterministic else None,
             )
+
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
 
             latent_image = batch['latent_image']
             scaled_latent_image = model.scale_latents(latent_image)
@@ -97,6 +101,11 @@ class BaseAnimaSetup(
                 timestep,
                 model.noise_scheduler.timesteps,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image, latent_noise, config, generator, rand
+                )
 
             # Anima latents are 5D (B,16,1,H/8,W/8) — no pack/unpack needed.
             # CosmosTransformer3DModel requires padding_mask in pixel space (1,1,H,W).

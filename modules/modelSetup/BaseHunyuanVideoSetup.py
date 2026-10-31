@@ -196,6 +196,14 @@ class BaseHunyuanVideoSetup(
                 text_encoder_2_dropout_probability=config.text_encoder_2.dropout_probability if not deterministic else None,
             )
 
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+                pooled_text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    pooled_text_encoder_output, config.cep_gamma, generator
+                )
+
             latent_image = batch['latent_image']
             scaled_latent_image = latent_image * vae_scaling_factor
 
@@ -218,6 +226,15 @@ class BaseHunyuanVideoSetup(
                 timestep,
                 model.noise_scheduler.timesteps,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image,
+                    latent_noise,
+                    config,
+                    generator,
+                    rand
+                )
 
             latent_input = scaled_noisy_latent_image
 

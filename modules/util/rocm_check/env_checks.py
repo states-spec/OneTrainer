@@ -38,6 +38,25 @@ def _git(*args: str) -> str:
         return "?"
 
 
+def _list_gpus(ctx: Ctx, rec: Rec):
+    # every visible GPU: an integrated one (a Ryzen CPU's) shows up next to the discrete card on ROCm
+    integrated = []
+    for i in range(torch.cuda.device_count()):
+        p = torch.cuda.get_device_properties(i)
+        arch = p.gcnArchName.split(":")[0] if ctx.is_rocm else f"sm_{p.major}{p.minor}"
+        if getattr(p, "is_integrated", 0):
+            integrated.append(i)
+        rec.line(f"  cuda:{i}: {p.name}, {arch}, {'integrated' if i in integrated else 'discrete'}, "
+                 f"{p.total_memory / 2**30:.1f} GiB" + (" (checked here)" if i == (ctx.device.index or 0) else ""))
+    selection = [f"{k}={os.environ[k]}" for k in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+                 if k in os.environ]
+    if selection:
+        rec.line(f"device selection: {', '.join(selection)}")
+    if integrated and torch.cuda.device_count() > 1:
+        rec.line("an integrated GPU is visible next to the discrete one. OneTrainer trains on train_device (default "
+                 "'cuda' = cuda:0); HIP_VISIBLE_DEVICES set to the discrete GPU's number hides the other one")
+
+
 @check(SECTION, "PyTorch, GPU, libraries and settings")
 def environment(ctx: Ctx, rec: Rec):
     rec.info()
@@ -58,6 +77,7 @@ def environment(ctx: Ctx, rec: Rec):
         rec.metric("vram_gib", total / 2**30)
         rec.metric("vram_free_gib", free / 2**30)
         rec.line(f"GPUs visible: {torch.cuda.device_count()}, bf16 supported: {torch.cuda.is_bf16_supported()}")
+        _list_gpus(ctx, rec)
         rec.line(f"BLAS library: {torch.backends.cuda.preferred_blas_library()}")
         if ctx.is_rocm:
             rec.line(f"flash attention library: {torch.backends.cuda.preferred_rocm_fa_library()}")

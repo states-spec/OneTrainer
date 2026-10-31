@@ -51,7 +51,7 @@ def cache_settings(config: TrainConfig) -> dict:
         "frames": config.frames,
         "aspect_ratio_bucketing": config.aspect_ratio_bucketing,
         "masked_training": config.masked_training,
-        "custom_conditioning_image": config.custom_conditioning_image,
+        "custom_conditioning_image": config.uses_custom_conditioning_image(),
         "text_encoders": {name: getattr(config, name) for name in sorted(config.types)
                           if _TEXT_ENCODER_SETTING.fullmatch(name)},
         "train_text_encoder_or_embedding": config.train_text_encoder_or_embedding(),

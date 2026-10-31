@@ -111,10 +111,35 @@ specify multiple resolutions as a comma-separated list. All resolutions will be 
 ### Masked training
 
 With masked training, you can instruct the model to only learn from some parts of your training images. For example, if
-you want to train a subject, but not the background, this setting will help. To enable masked training, you need to add
-a mask for every training image. This mask is binary image (black-and-white), where white regions define what should be
-included, and black regions are excluded. The files need the same name as the images, with an added `-masklabel.png`
+you want to train a subject, but not the background, this setting will help. To enable masked training, add a mask for
+your training images. This mask is a black-and-white image, where white regions define what should be included, and
+black regions are excluded. The files need the same name as the images, with an added `-masklabel.png`
 extension.
+
+- The mask of `photo.jpg` is `photo-masklabel.png` in the same folder. Masks are always PNG files, also for `.jpg` or
+  `.webp` images, and the name can't be changed. A file with any other name is not used as a mask (`photo-mask.png` is
+  even trained as an image of its own).
+- An image without a mask is trained on the whole image, the same as an all-white mask.
+- Gray mask values work as partial weights.
+
+On every model the mask weights the loss:
+
+- *Unmasked Weight* is the loss weight of the black areas, on every step (0: ignored, 1: same as no mask).
+- *Normalize Masked Area Loss* divides each sample's loss by its mask's average weight, so samples with small masks are
+  not learned more weakly.
+- *Masked Prior Preservation Weight* (LoRA only) trains the black areas towards the prediction of the original model;
+  set a low Unmasked Weight with it.
+
+**Inpainting models** (Stable Diffusion 1.5/2.0 inpainting, SDXL inpainting, Flux Fill) also take the mask and the image
+with the masked (white) area filled with gray as inputs, and the training tab shows two more settings for them:
+
+- *Unmasked Probability* is the share of samples that get an all-white mask and an all-gray image instead, so the model
+  also learns to generate whole images (the loss then covers the whole image).
+- *Custom Conditioning Image* replaces that grayed-out image with your own `photo-condlabel.png`, for example the
+  "before" image of a before/after pair to teach object removal.
+
+Upstream OneTrainer and older versions of this fork leave the mask out of the loss of inpainting models (the loss covers
+the whole image). To train one that way, set Unmasked Weight to 1.
 
 ### Sampling
 

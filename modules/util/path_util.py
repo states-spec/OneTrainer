@@ -29,6 +29,16 @@ def canonical_join(base_path: str, *paths: str):
     return joined.replace('\\', '/')
 
 
+# Everything the diagnostic tools write goes into one folder in the OneTrainer folder: rocm_check reports, diag_ab runs,
+# OT_DIAG_LOG=true logs, TunableOp results, the debug report and the profiling window's stack dumps.
+DIAGNOSTICS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                               "diagnostics")
+
+
+def diagnostics_path(*parts: str) -> str:
+    return os.path.join(DIAGNOSTICS_DIR, *parts)
+
+
 def write_json_atomic(path: str, obj: Any):
     with open(path + ".write", "w") as f:
         json.dump(obj, f, indent=4)

@@ -9,7 +9,7 @@ from modules.util.args.TrainArgs import TrainArgs
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.config.SecretsConfig import SecretsConfig
-from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.TrainConfig import TrainConfig, prepare_run_name
 from modules.util.optimizer_util import default_optimizer_config
 
 
@@ -50,6 +50,10 @@ def main():
     train_config = TrainConfig.default_values()
     train_config.optimizer = default_optimizer_config(optimizer)
     train_config = load_config(args, train_config)
+    # Default and Friendly names are new for each run. A config saved from the UI carries the name of the run it was
+    # saved for, and reusing it made every run of that config write over the same final model.
+    train_config.run_name = prepare_run_name(
+        train_config.training_method, train_config.run_name_mode, train_config.run_name, is_new_invocation=True)
 
     try:
         with open("secrets.json" if args.secrets_path is None else args.secrets_path, "r") as f:

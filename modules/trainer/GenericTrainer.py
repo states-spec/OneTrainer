@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import modules.util.multi_gpu_util as multi
+import modules.util.nvcomp_util as nvcomp_util
 from modules.dataLoader.BaseDataLoader import BaseDataLoader
 from modules.model.BaseModel import BaseModel
 from modules.modelLoader.BaseModelLoader import BaseModelLoader
@@ -22,7 +23,7 @@ from modules.util.callbacks.TrainCallbacks import TrainCallbacks
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.compile_util import init_compile, reset_compile
 from modules.util.config.SampleConfig import SampleConfig
-from modules.util.config.TrainConfig import TrainConfig
+from modules.util.config.TrainConfig import TrainConfig, get_output_model_destination
 from modules.util.dtype_util import create_grad_scaler, enable_grad_scaling
 from modules.util.enum.AttentionMechanism import AttentionMechanism
 from modules.util.enum.ConceptType import ConceptType
@@ -30,11 +31,14 @@ from modules.util.enum.DataType import DataType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.FileType import FileType
 from modules.util.enum.ModelFormat import ModelFormat
+from modules.util.enum.ModelType import PeftType
 from modules.util.enum.TimeUnit import TimeUnit
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.profiling_util import PeakMemoryRecorder, TorchMemoryRecorder, TorchProfiler
+from modules.util.run_diagnostics import apply_reproducibility_env, diagnostics
 from modules.util.time_util import get_string_timestamp
 from modules.util.torch_util import fp8_matmul_supported, torch_gc
+from modules.util.tqdm_util import tqdm
 from modules.util.TrainProgress import TrainProgress
 
 import torch
@@ -43,8 +47,6 @@ from torch.nn import Parameter
 from torch.utils.hooks import RemovableHandle
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.transforms.functional import pil_to_tensor
-
-from tqdm import tqdm
 
 # OT_DEBUG_PROFILES=1 dumps a CUDA memory snapshot for the first two steps, where the allocator is still
 # growing, and a profiler trace at steps 10 and 40, past compilation and warmup.
@@ -64,6 +66,7 @@ class GenericTrainer(BaseTrainer):
 
     previous_sample_time: float
     sample_queue: list[Callable]
+    default_sample_queued: bool
 
     parameters: list[Parameter]
 
@@ -80,7 +83,7 @@ class GenericTrainer(BaseTrainer):
         if multi.is_master():
             tensorboard_log_dir = os.path.join(config.workspace_dir, "tensorboard")
             os.makedirs(Path(tensorboard_log_dir).absolute(), exist_ok=True)
-            self.tensorboard = SummaryWriter(os.path.join(tensorboard_log_dir, f"{config.save_filename_prefix}{get_string_timestamp()}"))
+            self.tensorboard = SummaryWriter(os.path.join(tensorboard_log_dir, config.run_name))
             if config.tensorboard and not config.tensorboard_always_on:
                 super()._start_tensorboard()
 
@@ -88,6 +91,7 @@ class GenericTrainer(BaseTrainer):
         self.one_step_trained = False
         self.grad_hook_handles = []
 
+    @diagnostics.record_errors
     def start(self):
         # checked up front: the saver only rejects an unsupported format when it first saves, after the training
         formats = self.config.model_type.supported_output_formats(self.config.training_method)
@@ -96,8 +100,22 @@ class GenericTrainer(BaseTrainer):
                 f"Output format {self.config.output_model_format} can't save {self.config.training_method} training of "
                 f"{self.config.model_type}. Set output_model_format to one of: {', '.join(str(f) for f in formats)}."
             )
+        # a value saved for another model type stays when the type changes; the loss function raised at the first step
+        loss_weights = self.config.model_type.supported_loss_weights()
+        if self.config.loss_weight_fn not in loss_weights:
+            raise ValueError(
+                f"Loss weight function {self.config.loss_weight_fn} doesn't work with {self.config.model_type}. "
+                f"Set loss_weight_fn to one of: {', '.join(str(w) for w in loss_weights)}."
+            )
+        # a limit of 0 divides 0 by 0 on the zero-initialized rotations of the first step (NaN loss after caching)
+        if self.config.training_method == TrainingMethod.LORA and self.config.peft_type == PeftType.OFT_2 \
+                and self.config.oft_clipped_norm is not None and self.config.oft_clipped_norm <= 0:
+            raise ValueError("oft_clipped_norm must be greater than 0. Leave it empty to turn spectral norm clipping off.")
         self.__check_device_support()
         create.check_optimizer_config(self.config.optimizer)
+        diagnostics.close()  # a run in this process (the UI) that ended in an error left its log open
+        diagnostics.start(self.config, torch.device(self.config.train_device))
+        apply_reproducibility_env()
 
         if multi.is_master():
             self.__save_config_to_workspace()
@@ -158,19 +176,23 @@ class GenericTrainer(BaseTrainer):
         self.config.quantization.cache_dir = self.config.cache_dir + "/quantization"
         os.makedirs(self.config.quantization.cache_dir, exist_ok=True)
 
-        self.model = self.model_loader.load(
-            model_type=self.config.model_type,
-            model_names=model_names,
-            weight_dtypes=self.config.weight_dtypes(),
-            quantization=self.config.quantization,
-        )
+        with diagnostics.phase("load model"):
+            self.model = self.model_loader.load(
+                model_type=self.config.model_type,
+                model_names=model_names,
+                weight_dtypes=self.config.weight_dtypes(),
+                quantization=self.config.quantization,
+                stream_from_disk=self.config.streams_from_disk(),
+                cache_in_ram=self.config.cache_in_ram(),
+            )
         self.model.train_config = self.config
 
         self.callbacks.on_update_status("running model setup")
 
-        self.model_setup.setup_optimizations(self.model, self.config)
-        self.model_setup.setup_train_device(self.model, self.config)
-        self.model_setup.setup_model(self.model, self.config)
+        with diagnostics.phase("model setup"):
+            self.model_setup.setup_optimizations(self.model, self.config)
+            self.model_setup.setup_train_device(self.model, self.config)
+            self.model_setup.setup_model(self.model, self.config)
         self.model.eval()
 
         self.callbacks.on_update_status("creating the data loader/caching")
@@ -179,10 +201,14 @@ class GenericTrainer(BaseTrainer):
             self.model, self.model_setup, self.model.train_progress
         )
         self.model_saver = self.create_model_saver()
+        # the saver's format checks need the trained parts set up, so they run here, before the cache is built and
+        # the training starts: at the final save, a refusal came after the whole run and left no output
+        self.model_saver.check_can_save(self.model, self.config.output_model_format)
 
         self.model_sampler = self.create_model_sampler(self.model)
         self.previous_sample_time = -1
         self.sample_queue = []
+        self.default_sample_queued = False
 
         self.parameters = self.model.parameters.parameters()
 
@@ -203,22 +229,36 @@ class GenericTrainer(BaseTrainer):
         fp8_parts = []
         for part in self.config.model_type.model_parts():
             weight_dtype = getattr(self.config, part).weight_dtype
-            if weight_dtype.quantize_fpW8A8() or weight_dtype == DataType.GGUF_A8_FLOAT:
+            if weight_dtype.quantize_fpW8A8() or weight_dtype in (DataType.GGUF_A8_FLOAT, DataType.BFLOAT_16_A8_FLOAT):
                 fp8_parts.append(f"{part}: {weight_dtype}")
         train_device = torch.device(self.config.train_device)
         if fp8_parts and not fp8_matmul_supported(train_device):
             device_name = torch.cuda.get_device_name(train_device) if train_device.type == "cuda" else str(train_device)
             raise ValueError(
-                f"The float W8A8 weight data types ({', '.join(fp8_parts)}) compute in fp8, which {device_name} "
+                f"The float W8A8 / A8 weight data types ({', '.join(fp8_parts)}) compute in fp8, which {device_name} "
                 f"can't: that needs an NVIDIA GPU with compute capability 8.9 or newer, or an AMD Instinct MI300/MI350 "
                 f"or Radeon RX 9000 series GPU. Use float8 (W8) to store the weights in 8 bits and compute in the "
-                f"train data type, or int W8A8 / GGUF A8 int for int8 compute."
+                f"train data type, or int W8A8 / GGUF A8 int / bfloat16 A8 int for int8 compute."
+            )
+
+        # the compressed weight data types need nvCOMP (NVIDIA only). Without it the loader stops while it builds
+        # the first compressed layer (quantization_util); stopped here, nothing has loaded yet.
+        compressed_parts = [part for part in self.config.model_type.model_parts()
+                            if getattr(self.config, part).weight_dtype.is_compressed()]
+        if compressed_parts and not nvcomp_util.available():
+            raise ValueError(
+                f"The compressed weight data types "
+                f"({', '.join(f'{part}: {getattr(self.config, part).weight_dtype}' for part in compressed_parts)}) "
+                f"need nvCOMP, which isn't available: {nvcomp_util.unavailable_reason()}. Use the same data type "
+                f"without compression "
+                f"({', '.join(f'{part}: {getattr(self.config, part).weight_dtype.uncompressed()}' for part in compressed_parts)}"
+                f", the same choice without 'compressed' on the model tab): the same weights, uncompressed."
             )
 
     def __save_config_to_workspace(self):
         path = path_util.canonical_join(self.config.workspace_dir, "config")
         os.makedirs(Path(path).absolute(), exist_ok=True)
-        path = path_util.canonical_join(path, f"{self.config.save_filename_prefix}{get_string_timestamp()}.json")
+        path = path_util.canonical_join(path, f"{self.config.run_name}.json")
         with open(path, "w") as f:
             json.dump(self.config.to_pack_dict(secrets=False), f, indent=4)
 
@@ -234,22 +274,11 @@ class GenericTrainer(BaseTrainer):
                     shutil.rmtree(path)
 
     def __prune_backups(self, backups_to_keep: int):
-        backup_dirpath = os.path.join(self.config.workspace_dir, "backup")
-        if os.path.exists(backup_dirpath):
-            backup_directories = sorted(
-                [dirpath for dirpath in os.listdir(backup_dirpath) if
-                 os.path.isdir(os.path.join(backup_dirpath, dirpath))],
-                reverse=True,
-            )
-
-            for dirpath in backup_directories[backups_to_keep:]:
-                dirpath = os.path.join(backup_dirpath, dirpath)
-                try:
-                    shutil.rmtree(dirpath)
-                except Exception:
-                    tqdm.write(f"Could not delete old rolling backup {dirpath}")
-
-        return
+        for dirpath in self.config.get_backup_paths()[backups_to_keep:]:
+            try:
+                shutil.rmtree(dirpath)
+            except OSError:  # noqa: PERF203 - continue pruning after a filesystem error
+                tqdm.write(f"Could not delete old rolling backup {dirpath}")
 
     def __enqueue_sample_during_training(self, fun: Callable):
         self.sample_queue.append(fun)
@@ -259,6 +288,7 @@ class GenericTrainer(BaseTrainer):
             for fun in self.sample_queue:
                 fun()
         self.sample_queue = []
+        self.default_sample_queued = False
 
     def __sample_loop(
             self,
@@ -291,7 +321,7 @@ class GenericTrainer(BaseTrainer):
 
                 sample_path = os.path.join(
                     sample_dir,
-                    f"{self.config.save_filename_prefix}{get_string_timestamp()}-training-sample-{train_progress.filename_string()}"
+                    f"{self.config.get_timestamped_run_name()}-training-sample-{train_progress.filename_string()}"
                 )
 
                 def on_sample_default(sampler_output: ModelSamplerOutput):
@@ -328,6 +358,7 @@ class GenericTrainer(BaseTrainer):
 
             torch_gc()
 
+    @diagnostics.phase_method("sampling")
     def __sample_during_training(
             self,
             train_progress: TrainProgress,
@@ -397,84 +428,88 @@ class GenericTrainer(BaseTrainer):
 
     def __validate(self, train_progress: TrainProgress):
         if self.__needs_validate(train_progress):
-            self.validation_data_loader.get_data_set().start_next_epoch()
-            current_epoch_length_validation = self.validation_data_loader.get_data_set().approximate_length()
+            with diagnostics.phase("validation"):
+                self.__run_validation(train_progress)
 
-            if current_epoch_length_validation == 0:
-                return
+    def __run_validation(self, train_progress: TrainProgress):
+        self.validation_data_loader.get_data_set().start_next_epoch()
+        current_epoch_length_validation = self.validation_data_loader.get_data_set().approximate_length()
 
-            self.callbacks.on_update_status("Calculating validation loss")
-            self.model_setup.setup_train_device(self.model, self.config)
-            # evaluated like samples: without dropout, and on the weights that are sampled and saved (schedule-free
-            # optimizers train on an interpolated point and switch to their averaged weights for evaluation)
-            self.model.eval()
-            self.__before_eval()
+        if current_epoch_length_validation == 0:
+            return
 
-            torch_gc()
+        self.callbacks.on_update_status("Calculating validation loss")
+        self.model_setup.setup_train_device(self.model, self.config)
+        # evaluated like samples: without dropout, and on the weights that are sampled and saved (schedule-free
+        # optimizers train on an interpolated point and switch to their averaged weights for evaluation)
+        self.model.eval()
+        self.__before_eval()
 
-            step_tqdm_validation = tqdm(
-                self.validation_data_loader.get_data_loader(),
-                desc="validation_step",
-                total=current_epoch_length_validation)
+        torch_gc()
 
-            accumulated_loss_per_concept = {}
-            concept_counts = {}
-            mapping_seed_to_label = {}
-            mapping_label_to_seed = {}
+        step_tqdm_validation = tqdm(
+            self.validation_data_loader.get_data_loader(),
+            desc="validation_step",
+            total=current_epoch_length_validation)
 
-            for validation_batch in step_tqdm_validation:
-                if self.__needs_gc(train_progress):
-                    torch_gc()
+        accumulated_loss_per_concept = {}
+        concept_counts = {}
+        mapping_seed_to_label = {}
+        mapping_label_to_seed = {}
 
-                with torch.no_grad():
-                    model_output_data = self.model_setup.predict(
-                        self.model, validation_batch, self.config, train_progress, deterministic=True)
-                    loss_validation = self.model_setup.calculate_loss(
-                        self.model, validation_batch, model_output_data, self.config)
+        for validation_batch in step_tqdm_validation:
+            if self.__needs_gc(train_progress):
+                torch_gc()
 
-                # since validation batch size = 1
-                concept_name = validation_batch["concept_name"][0]
-                concept_path = validation_batch["concept_path"][0]
-                concept_seed = validation_batch["concept_seed"].item()
-                loss = loss_validation.item()
+            with torch.no_grad():
+                model_output_data = self.model_setup.predict(
+                    self.model, validation_batch, self.config, train_progress, deterministic=True)
+                loss_validation = self.model_setup.calculate_loss(
+                    self.model, validation_batch, model_output_data, self.config)
 
-                label = concept_name if concept_name else os.path.basename(concept_path)
-                # check and fix collision to display both graphs in tensorboard
-                if label in mapping_label_to_seed and mapping_label_to_seed[label] != concept_seed:
-                    suffix = 1
+            # since validation batch size = 1
+            concept_name = validation_batch["concept_name"][0]
+            concept_path = validation_batch["concept_path"][0]
+            concept_seed = validation_batch["concept_seed"].item()
+            loss = loss_validation.item()
+
+            label = concept_name if concept_name else os.path.basename(concept_path)
+            # check and fix collision to display both graphs in tensorboard
+            if label in mapping_label_to_seed and mapping_label_to_seed[label] != concept_seed:
+                suffix = 1
+                new_label = f"{label}({suffix})"
+                while new_label in mapping_label_to_seed and mapping_label_to_seed[new_label] != concept_seed:
+                    suffix += 1
                     new_label = f"{label}({suffix})"
-                    while new_label in mapping_label_to_seed and mapping_label_to_seed[new_label] != concept_seed:
-                        suffix += 1
-                        new_label = f"{label}({suffix})"
-                    label = new_label
+                label = new_label
 
-                if concept_seed not in mapping_seed_to_label:
-                    mapping_seed_to_label[concept_seed] = label
-                    mapping_label_to_seed[label] = concept_seed
+            if concept_seed not in mapping_seed_to_label:
+                mapping_seed_to_label[concept_seed] = label
+                mapping_label_to_seed[label] = concept_seed
 
-                accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
-                concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
+            accumulated_loss_per_concept[concept_seed] = accumulated_loss_per_concept.get(concept_seed, 0) + loss
+            concept_counts[concept_seed] = concept_counts.get(concept_seed, 0) + 1
 
-            self.model_setup.setup_train_device(self.model, self.config)
-            if self.config.optimizer.optimizer.is_schedule_free:
-                torch.clear_autocast_cache()
-                self.model.optimizer.train()
+        self.model_setup.setup_train_device(self.model, self.config)
+        if self.config.optimizer.optimizer.is_schedule_free:
+            torch.clear_autocast_cache()
+            self.model.optimizer.train()
 
-            for concept_seed, total_loss in accumulated_loss_per_concept.items():
-                average_loss = total_loss / concept_counts[concept_seed]
+        for concept_seed, total_loss in accumulated_loss_per_concept.items():
+            average_loss = total_loss / concept_counts[concept_seed]
 
-                self.tensorboard.add_scalar(f"loss/validation_step/{mapping_seed_to_label[concept_seed]}",
-                                            average_loss,
-                                            train_progress.global_step)
+            self.tensorboard.add_scalar(f"loss/validation_step/{mapping_seed_to_label[concept_seed]}",
+                                        average_loss,
+                                        train_progress.global_step)
 
-            if len(concept_counts) > 1:
-                total_loss = sum(accumulated_loss_per_concept[key] for key in concept_counts)
-                total_count = sum(concept_counts[key] for key in concept_counts)
-                total_average_loss = total_loss / total_count
+        if len(concept_counts) > 1:
+            total_loss = sum(accumulated_loss_per_concept[key] for key in concept_counts)
+            total_count = sum(concept_counts[key] for key in concept_counts)
+            total_average_loss = total_loss / total_count
 
-                self.tensorboard.add_scalar("loss/validation_step/total_average",
-                                            total_average_loss,
-                                            train_progress.global_step)
+            self.tensorboard.add_scalar("loss/validation_step/total_average",
+                                        total_average_loss,
+                                        train_progress.global_step)
 
     def __save_backup_config(self, backup_path):
         config_path = os.path.join(backup_path, "onetrainer_config")
@@ -491,12 +526,14 @@ class GenericTrainer(BaseTrainer):
         if os.path.isfile(self.config.sample_definition_file_name):
             shutil.copy2(self.config.sample_definition_file_name, samples_path)
 
+    @diagnostics.phase_method("backup")
     def __backup(self, train_progress: TrainProgress, print_msg: bool = True):
         torch_gc()
 
         self.callbacks.on_update_status("Creating backup")
 
-        backup_name = f"{get_string_timestamp()}-backup-{train_progress.filename_string()}"
+        save_name = path_util.safe_filename(self.config.get_timestamped_run_name(), max_length=None)
+        backup_name = f"{save_name}-backup-{train_progress.filename_string()}"
         backup_path = os.path.join(self.config.workspace_dir, "backup", backup_name)
 
         # Special case for schedule-free optimizers.
@@ -538,27 +575,31 @@ class GenericTrainer(BaseTrainer):
 
         torch_gc()
 
+    @diagnostics.phase_method("save")
     def __save(self, train_progress: TrainProgress, print_msg: bool = True):
         torch_gc()
 
         self.callbacks.on_update_status("Saving")
 
+        save_name = path_util.safe_filename(self.config.get_timestamped_run_name(), max_length=None)
         save_path = os.path.join(
             self.config.workspace_dir,
             "save",
-            f"{self.config.save_filename_prefix}{get_string_timestamp()}-save-{train_progress.filename_string()}{self.config.output_model_format.file_extension()}"
+            f"{save_name}-save-{train_progress.filename_string()}{self.config.output_model_format.file_extension()}"
         )
         if print_msg:
             tqdm.write("Saving " + save_path)
 
         try:
-            if self.model.ema:
-                self.model.ema.copy_ema_to(self.parameters, store_temp=True)
-
-            # Special case for schedule-free optimizers.
+            # Special case for schedule-free optimizers. eval() goes before the EMA weights are copied in, as in end()
+            # and sampling: after them, it moved the EMA weights towards the optimizer's z sequence
             if self.config.optimizer.optimizer.is_schedule_free:
                 torch.clear_autocast_cache()
                 self.model.optimizer.eval()
+
+            if self.model.ema:
+                self.model.ema.copy_ema_to(self.parameters, store_temp=True)
+
             self.model_saver.save(
                 model=self.model,
                 model_type=self.config.model_type,
@@ -566,9 +607,6 @@ class GenericTrainer(BaseTrainer):
                 output_model_destination=save_path,
                 dtype=self.config.output_dtype.torch_dtype()
             )
-            if self.config.optimizer.optimizer.is_schedule_free:
-                torch.clear_autocast_cache()
-                self.model.optimizer.train()
         except Exception:
             traceback.print_exc()
             tqdm.write("Could not save model. Check your disk space!")
@@ -583,6 +621,10 @@ class GenericTrainer(BaseTrainer):
         finally:
             if self.model.ema:
                 self.model.ema.copy_temp_to(self.parameters)
+            # also after a failed save, which used to leave the optimizer in eval mode for the rest of the training
+            if self.config.optimizer.optimizer.is_schedule_free:
+                torch.clear_autocast_cache()
+                self.model.optimizer.train()
 
         torch_gc()
 
@@ -624,6 +666,11 @@ class GenericTrainer(BaseTrainer):
         if fused_optimizer_step:
             if self.config.gradient_accumulation_steps > 1:
                 print("Warning: activating Fused Back Pass with Accumulation Steps > 1 does not reduce VRAM usage.")
+            if self.config.clip_grad_norm is not None:
+                # each tensor is stepped in its own grad hook, before the other gradients exist
+                print(f"Note: with Fused Back Pass, Clip Grad Norm clips each parameter's gradient to a norm of "
+                      f"{self.config.clip_grad_norm} on its own, not the norm of all gradients together, which is only "
+                      f"known after the back pass. This clips less than the same value without Fused Back Pass.")
             if self.config.multi_gpu and not fused_reduce:
                 raise ValueError("if Fused Back Pass and Multi-GPU is enabled, Fused Reduce must also be enabled")
         elif not fused_reduce:
@@ -648,19 +695,21 @@ class GenericTrainer(BaseTrainer):
                             self.model.optimizer.step_parameter(tensor, param_group, i)
                             tensor.grad = None
 
-                    def __grad_hook(tensor: Tensor, param_group=param_group, i=i):
+                    # the step function is bound as a default: a closure would see only the one defined for the last
+                    # parameter, so every parameter was stepped with the last param group's lr, betas and decay
+                    def __grad_hook(tensor: Tensor, optimizer_step=__optimizer_step):
                         init_compile()  # workaround for https://github.com/pytorch/pytorch/issues/186537
                         if self.__is_update_step(self.model.train_progress):
                             if fused_reduce:
                                 multi.reduce_grads_mean(
                                     [tensor],
                                     self.config.gradient_reduce_precision,
-                                    after_reduce=__optimizer_step if fused_optimizer_step else None,
+                                    after_reduce=optimizer_step if fused_optimizer_step else None,
                                     async_op=self.config.async_gradient_reduce,
                                     max_buffer=self.config.async_gradient_reduce_buffer * 1024 * 1024,
                                 )
                             elif fused_optimizer_step:
-                                __optimizer_step(tensor)
+                                optimizer_step(tensor)
 
                     handle = parameter.register_post_accumulate_grad_hook(__grad_hook)
                     self.grad_hook_handles.append(handle)
@@ -674,6 +723,7 @@ class GenericTrainer(BaseTrainer):
             torch.clear_autocast_cache()
             self.model.optimizer.eval()
 
+    @diagnostics.record_errors
     def train(self):
         train_device = torch.device(self.config.train_device)
 
@@ -683,7 +733,8 @@ class GenericTrainer(BaseTrainer):
             if multi.is_master():
                 self.callbacks.on_update_status("Caching")
                 for _epoch in tqdm(range(train_progress.epoch, self.config.epochs, 1), desc="epoch"):
-                    self.data_loader.get_data_set().start_next_epoch()
+                    with diagnostics.phase("caching", epoch=_epoch):
+                        self.data_loader.get_data_set().start_next_epoch()
             return
 
         scaler = create_grad_scaler() if enable_grad_scaling(self.config.train_dtype, self.parameters) else None
@@ -700,7 +751,9 @@ class GenericTrainer(BaseTrainer):
         ema_loss_steps = 0
         epochs = range(train_progress.epoch, self.config.epochs, 1)
 
-        for _epoch in tqdm(epochs, desc="epoch") if multi.is_master() else epochs:
+        if multi.is_master():
+            epochs = tqdm(epochs, desc="epoch", initial=train_progress.epoch, total=self.config.epochs)
+        for _epoch in epochs:
             multi.sync_commands(self.commands)
             if self.commands.get_stop_command():
                 return
@@ -708,12 +761,13 @@ class GenericTrainer(BaseTrainer):
 
             #call start_next_epoch with only one process at first, because it might write to the cache. All subsequent processes can read in parallel:
             for _ in multi.master_first():
-                if self.config.latent_caching:
-                    self.data_loader.get_data_set().start_next_epoch()
-                    self.model_setup.setup_train_device(self.model, self.config)
-                else:
-                    self.model_setup.setup_train_device(self.model, self.config)
-                    self.data_loader.get_data_set().start_next_epoch()
+                with diagnostics.phase("epoch start (caching)", epoch=train_progress.epoch):
+                    if self.config.latent_caching:
+                        self.data_loader.get_data_set().start_next_epoch()
+                        self.model_setup.setup_train_device(self.model, self.config)
+                    else:
+                        self.model_setup.setup_train_device(self.model, self.config)
+                        self.data_loader.get_data_set().start_next_epoch()
 
             if self.config.debug_mode:
                 multi.warn_parameter_divergence(self.parameters, train_device)
@@ -725,7 +779,9 @@ class GenericTrainer(BaseTrainer):
                 torch.clear_autocast_cache()
                 self.model.optimizer.train()
 
-            torch_gc()
+            # no torch_gc here: setup_train_device above ends in materialize_only(), which collects whenever a
+            # part actually moved. On an epoch that changed nothing (the usual case once the caches are warm)
+            # there is nothing to reclaim, and this collection cost ~350ms of the epoch gap on a large model.
 
             if lr_scheduler is None:
                 lr_scheduler = create.create_lr_scheduler(
@@ -757,7 +813,14 @@ class GenericTrainer(BaseTrainer):
                 if self.commands.get_stop_command():
                     multi.warn_parameter_divergence(self.parameters, train_device)
 
-                if not self.commands.get_stop_command() and self.__needs_sample(train_progress) or self.commands.get_and_reset_sample_default_command():
+                # A "sample now" request on a step that samples anyway, or while a sample still waits in the queue
+                # (with gradient accumulation it runs at the next update), is that same sample, so it is used up
+                # here without a second one. The request used to stay set behind the scheduled sample's `or`, and
+                # sampled the same weights again on the next step.
+                scheduled_sample = not self.commands.get_stop_command() and self.__needs_sample(train_progress)
+                requested_sample = self.commands.get_and_reset_sample_default_command()
+                if (scheduled_sample or requested_sample) and not self.default_sample_queued:
+                    self.default_sample_queued = True
                     self.__enqueue_sample_during_training(
                         lambda: self.__sample_during_training(train_progress, train_device)
                     )
@@ -897,6 +960,7 @@ class GenericTrainer(BaseTrainer):
                             )
 
                         self.one_step_trained = True
+                        diagnostics.step(train_progress.global_step, train_progress.epoch, accumulated_loss_cpu)
 
                 if self.config.validation and multi.is_master():
                     self.__validate(train_progress)
@@ -944,22 +1008,22 @@ class GenericTrainer(BaseTrainer):
 
                 if self.model.ema:
                     self.model.ema.copy_ema_to(self.parameters, store_temp=False)
-                if os.path.isdir(self.config.output_model_destination) and self.config.output_model_format.is_single_file():
-                    save_path = os.path.join(
-                        self.config.output_model_destination,
-                        f"{self.config.save_filename_prefix}{get_string_timestamp()}{self.config.output_model_format.file_extension()}"
-                    )
-                else:
-                    save_path = self.config.output_model_destination
+                save_path = get_output_model_destination(
+                    self.config.final_output_dir,
+                    self.config.run_name,
+                    self.config.output_model_format,
+                )
                 print("Saving " + save_path)
 
-                self.model_saver.save(
-                    model=self.model,
-                    model_type=self.config.model_type,
-                    output_model_format=self.config.output_model_format,
-                    output_model_destination=save_path,
-                    dtype=self.config.output_dtype.torch_dtype()
-                )
+                with diagnostics.phase("final save", path=save_path):
+                    self.model_saver.save(
+                        model=self.model,
+                        model_type=self.config.model_type,
+                        output_model_format=self.config.output_model_format,
+                        output_model_destination=save_path,
+                        dtype=self.config.output_dtype.torch_dtype()
+                    )
+                diagnostics.output(save_path)
 
         if self.model is not None:
             self.model.evict()
@@ -972,3 +1036,4 @@ class GenericTrainer(BaseTrainer):
 
         for handle in self.grad_hook_handles:
             handle.remove()
+        diagnostics.close()

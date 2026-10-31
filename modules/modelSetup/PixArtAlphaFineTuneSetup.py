@@ -41,15 +41,9 @@ class PixArtAlphaFineTuneSetup(
             model: PixArtAlphaModel,
             config: TrainConfig,
     ):
+        self._setup_embeddings_requires_grad(model, config)
+
         self._setup_model_part_requires_grad("text_encoder", model.text_encoder, config.text_encoder, model.train_progress)
-
-        for i, embedding in enumerate(model.additional_embeddings):
-            embedding_config = config.additional_embeddings[i]
-            train_embedding = embedding_config.train and \
-                              not self.stop_additional_embedding_training_elapsed(embedding_config,
-                                                                                  model.train_progress, i)
-            embedding.text_encoder_vector.requires_grad_(train_embedding)
-
         self._setup_model_part_requires_grad("transformer", model.transformer, config.transformer, model.train_progress)
 
         model.vae.requires_grad_(False)

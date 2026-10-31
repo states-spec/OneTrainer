@@ -1,3 +1,4 @@
+from modules.ui.BaseOptimizerParamsWindowView import OptionDependencies
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.optimizer_util import adv_state_precisions
 
@@ -25,7 +26,7 @@ class BaseMuonAdamWindowView:
             'factored_2nd': {'title': 'Factored 2nd Moment', 'tooltip': 'Factorizes only the second moment (the variance estimate) to save memory, while the first moment keeps the State Precision format. Works together with any State Precision.', 'type': 'bool'},
             'fisher_wd': {'title': 'Fisher Weight Decay', 'tooltip': 'Scales the weight decay by the second-moment (Fisher) estimate, as in the FAdam paper, instead of applying it uniformly.', 'type': 'bool'},
             'centered_wd': {'title': 'Centered Weight Decay', 'tooltip': 'Decays the weights toward their values at the start of training (the anchor) instead of toward zero. Can be combined with the normal weight decay. 0 or empty disables it. Stores a copy of the trained weights, see Anchor Precision.', 'type': 'float'},
-            'centered_wd_mode': {'title': 'Anchor Precision', 'tooltip': 'Storage format of the Centered Weight Decay anchor. full: the parameter dtype. float8: float8 e4m3 (default). int8 / int4: block-wise quantized. Only used when Centered Weight Decay is above 0.', 'type': 'choice', 'values': ['full', 'float8', 'int8', 'int4']},
+            'centered_wd_mode': {'title': 'Anchor Precision', 'tooltip': 'Storage format of the Centered Weight Decay anchor. full: the parameter dtype (default). float8: an unscaled float8 e4m3 cast, about 3-11% off the weights and small weights become 0. int8 / int4: block-wise quantized. Only used when Centered Weight Decay is above 0, and not for LoRA/OFT weights (their decay is already centered).', 'type': 'choice', 'values': ['full', 'float8', 'int8', 'int4']},
             'spectral_normalization': {'title': 'Spectral Scaling', 'tooltip': 'Scales each update by its spectral norm (estimated by power iteration), which makes the update size independent of the layer width or LoRA rank.', 'type': 'bool'},
             'orthogonal_gradient': {'title': 'OrthoGrad', 'tooltip': 'Removes the gradient component parallel to the weight, which reduces overfitting and improves generalization. flattened: the original OrthoGrad over the whole tensor. iterative: a matrix-wise variant (adv_optm 2.5). disabled: off.', 'type': 'choice', 'values': ['disabled', 'flattened', 'iterative']},
             'use_atan2': {'title': 'Atan2 Scaling', 'tooltip': 'A robust replacement for eps, which also incorporates gradient clipping, bounding and stabilizing the optimizer updates.', 'type': 'bool'},
@@ -34,6 +35,7 @@ class BaseMuonAdamWindowView:
         # @formatter:on
 
         adam_params = controller.get_adam_params_def()
+        dependencies = OptionDependencies(self.components, ui_state, adam_params.keys())
 
         for index, key in enumerate(adam_params.keys()):
             if key not in KEY_DETAIL_MAP:
@@ -48,12 +50,17 @@ class BaseMuonAdamWindowView:
             row = index // 2
             col = 3 * (index % 2)
 
-            self.components.label(master, row, col, title, tooltip=tooltip)
+            label = self.components.label(master, row, col, title, tooltip=tooltip)
 
             if param_type == 'choice':
                 values = arg_info['values'](Optimizer.ADAMW_ADV) if callable(arg_info['values']) else arg_info['values']
-                self.components.options(master, row, col + 1, values, ui_state, key)
+                dependencies.add(key, self.components.options(master, row, col + 1, values, ui_state, key,
+                                                              command=dependencies.update), label)
             elif param_type != 'bool':
-                self.components.entry(master, row, col + 1, ui_state, key)
+                dependencies.add(key, self.components.entry(master, row, col + 1, ui_state, key,
+                                                            command=dependencies.update), label)
             else:
-                self.components.switch(master, row, col + 1, ui_state, key)
+                dependencies.add(key, self.components.switch(master, row, col + 1, ui_state, key,
+                                                             command=dependencies.update), label)
+
+        dependencies.update()

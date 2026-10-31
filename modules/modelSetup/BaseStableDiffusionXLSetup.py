@@ -50,12 +50,14 @@ class BaseStableDiffusionXLSetup(
 
         if config.unet.checkpointing_enabled():
             model.unet.enable_gradient_checkpointing()
+        # conductors go into model.offload_conductor, keyed by the part's stem, where BaseModel._move_part finds them
+        conductors = {
+            "text_encoder_1": enable_checkpointing_for_clip_encoder_layers(model.text_encoder_1, config, config.text_encoder),
+            "text_encoder_2": enable_checkpointing_for_clip_encoder_layers(model.text_encoder_2, config, config.text_encoder_2),
+        }
         if config.unet.checkpointing_or_offloading_enabled():
-            model.unet_offload_conductor = enable_checkpointing_for_stable_diffusion_unet(model.unet, config, config.unet)
-        model.text_encoder_1_offload_conductor = \
-            enable_checkpointing_for_clip_encoder_layers(model.text_encoder_1, config, config.text_encoder)
-        model.text_encoder_2_offload_conductor = \
-            enable_checkpointing_for_clip_encoder_layers(model.text_encoder_2, config, config.text_encoder_2)
+            conductors["unet"] = enable_checkpointing_for_stable_diffusion_unet(model.unet, config, config.unet)
+        model.offload_conductor.update({stem: c for stem, c in conductors.items() if c is not None})
 
         if config.force_circular_padding:
             apply_circular_padding_to_conv2d(model.vae)
@@ -70,10 +72,14 @@ class BaseStableDiffusionXLSetup(
             config.enable_autocast_cache,
         )
 
-        quantize_layers(model.text_encoder_1, self.train_device, model.train_dtype, config)
-        quantize_layers(model.text_encoder_2, self.train_device, model.train_dtype, config)
+        # a streamed part (materialize_fn set) is still a meta skeleton here and is quantized as it streams in, as in
+        # BaseModelSetup._setup_model_part (quantizing it here failed with "Cannot copy out of meta tensor")
+        for name in ("text_encoder_1", "text_encoder_2"):
+            if model.materialize_fn.get(name) is None:
+                quantize_layers(getattr(model, name), self.train_device, model.train_dtype, config)
         quantize_layers(model.vae, self.train_device, model.vae_train_dtype, config)
-        quantize_layers(model.unet, self.train_device, model.train_dtype, config)
+        if model.materialize_fn.get("unet") is None:
+            quantize_layers(model.unet, self.train_device, model.train_dtype, config)
         self._set_attention_backend(model.unet, config.attention_mechanism, mask=False)
 
     def _setup_embeddings(
@@ -212,6 +218,14 @@ class BaseStableDiffusionXLSetup(
                 text_encoder_2_dropout_probability=config.text_encoder_2.dropout_probability if not deterministic else None,
             ))
 
+            if config.cep_gamma > 0 and not deterministic:
+                text_encoder_output = self._apply_conditional_embedding_perturbation(
+                    text_encoder_output, config.cep_gamma, generator
+                )
+                pooled_text_encoder_2_output = self._apply_conditional_embedding_perturbation(
+                    pooled_text_encoder_2_output, config.cep_gamma, generator
+                )
+
             latent_image = batch['latent_image']
             scaled_latent_image = latent_image * vae_scaling_factor
 
@@ -241,6 +255,11 @@ class BaseStableDiffusionXLSetup(
                 timestep,
                 model.noise_scheduler.betas,
             )
+
+            if not deterministic:
+                scaled_noisy_latent_image, latent_noise = self._apply_ciop(
+                    scaled_noisy_latent_image, latent_noise, config, generator, rand
+                )
 
             # original size of the image
             original_height = batch['original_resolution'][0]

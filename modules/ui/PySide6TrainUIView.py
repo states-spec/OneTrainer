@@ -32,8 +32,9 @@ from modules.util.config.TrainConfig import TrainConfig
 from modules.util.config.UISettingsConfig import UISettingsConfig
 from modules.util.enum.ModelType import ModelType
 from modules.util.enum.TrainingMethod import TrainingMethod
+from modules.util.enum.UITheme import UITheme
 from modules.util.ui import pyside6_components
-from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings, file_dialog_options
+from modules.util.ui.pyside6_util import QtABCMeta, apply_ui_settings, file_dialog_options, is_dark_theme
 from modules.util.ui.PySide6UIState import PySide6UIState
 
 from PySide6.QtCore import Qt, QTimer
@@ -99,6 +100,7 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self._create_tabs()
         self.change_training_method(self.controller.train_config.training_method)
         self._update_additional_embeddings_tab(self.controller.train_config.model_type)
+        self.controller.sync_run_name(is_new_invocation=True)
 
         self._profiling_controller = ProfilingWindowController()
         self.profiling_window = self._profiling_controller.create_window(self, PySide6ProfilingWindowView)
@@ -107,6 +109,7 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self.workspace_dir_trace_id = self.ui_state.add_var_trace(
             "workspace_dir", self.controller._on_workspace_dir_change_trace
         )
+        self.__restore_last_tab()
 
     def closeEvent(self, event):
         if self.controller.training_thread is not None and self.controller.training_thread.is_alive():
@@ -118,18 +121,31 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             event.ignore()
             return
         self.top_bar_component.save_default()
-        self.__save_window_size()
+        self.__save_window_state()
         self.controller._stop_always_on_tensorboard()
         self.ui_state.remove_var_trace("workspace_dir", self.workspace_dir_trace_id)
         event.accept()
 
-    def __save_window_size(self):
-        if not self.ui_settings.remember_window_size:
-            return
-        size = self.normalGeometry().size() if self.isMaximized() or self.isFullScreen() else self.size()
-        self.ui_settings.window_width = size.width()
-        self.ui_settings.window_height = size.height()
+    def __save_window_state(self):
+        # the last tab always, the window size only with "remember window size"
+        page = self.tabview.currentWidget()
+        self.ui_settings.last_tab = next((name for name, widget in self._tab_widgets.items() if widget is page),
+                                         self.ui_settings.last_tab)
+        if self.ui_settings.remember_window_size:
+            size = self.normalGeometry().size() if self.isMaximized() or self.isFullScreen() else self.size()
+            self.ui_settings.window_width = size.width()
+            self.ui_settings.window_height = size.height()
         self.ui_settings.save()
+
+    def __restore_last_tab(self):
+        page = self._tab_widgets.get(self.ui_settings.last_tab)
+        index = self.tabview.indexOf(page) if page is not None else -1
+        if index >= 0 and self.tabview.isTabVisible(index) and self.tabview.isTabEnabled(index):
+            self.tabview.setCurrentIndex(index)
+
+    def _toggle_theme(self):
+        # through the Settings tab's var: its dropdown follows, and the change is applied and saved as a pick there is
+        self.ui_settings_state.get_var("theme").set(str(UITheme.LIGHT if is_dark_theme() else UITheme.DARK))
 
     # --- BaseTrainUIView abstract method implementations ---
 
@@ -141,6 +157,7 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
         self._set_training_button_style("running")
 
     def on_training_stopped(self, error_caught: bool):
+        self.controller.sync_run_name(is_new_invocation=True)
         self.eta_label.setText("")
         self._set_training_button_style("idle")
 
@@ -213,6 +230,7 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
             self.change_model_type,
             self.change_training_method,
             self.load_preset,
+            self._toggle_theme,
         )
 
     def _build_bottom_bar(self, parent):
@@ -386,6 +404,10 @@ class PySide6TrainView(BaseTrainUIView, QMainWindow, metaclass=QtABCMeta):
 
         if self.model_tab:
             self.model_tab.refresh_ui()
+
+        if self.training_tab:
+            # its masking settings depend on the training method
+            self.training_tab.refresh_ui()
 
         if self.lora_tab:
             self.lora_tab.refresh_ui()

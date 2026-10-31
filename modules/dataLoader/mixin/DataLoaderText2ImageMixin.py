@@ -6,6 +6,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Callable
 
 import modules.util.multi_gpu_util as multi
+from modules.dataLoader.DropTags import DropTags
 from modules.dataLoader.pipelineModules.CheckFinite import CheckFinite
 from modules.model.BaseModel import BaseModel
 from modules.modelSetup.BaseModelSetup import BaseModelSetup
@@ -25,7 +26,6 @@ from mgds.pipelineModules.CollectPaths import CollectPaths
 from mgds.pipelineModules.DiskCache import DiskCache
 from mgds.pipelineModules.DistributedSampler import DistributedSampler
 from mgds.pipelineModules.DownloadHuggingfaceDatasets import DownloadHuggingfaceDatasets
-from mgds.pipelineModules.DropTags import DropTags
 from mgds.pipelineModules.GenerateImageLike import GenerateImageLike
 from mgds.pipelineModules.GenerateMaskedConditioningImage import GenerateMaskedConditioningImage
 from mgds.pipelineModules.GetFilename import GetFilename
@@ -85,7 +85,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
 
         if config.masked_training:
             modules.append(mask_path)
-        if config.custom_conditioning_image:
+        if config.uses_custom_conditioning_image():
             modules.append(cond_path)
 
         return modules
@@ -129,7 +129,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         elif config.model_type.has_mask_input():
             modules.append(generate_mask)
 
-        if config.custom_conditioning_image:
+        if config.uses_custom_conditioning_image():
             modules.append(load_cond_image)
 
         if vae_frame_dim:
@@ -198,7 +198,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         if config.model_type.has_depth_input():
             inputs.append('depth')
 
-        if config.custom_conditioning_image:
+        if config.uses_custom_conditioning_image():
             inputs.append('custom_conditioning_image')
 
         scale_crop = ScaleCropImage(names=inputs, scale_resolution_in_name='scale_resolution', crop_resolution_in_name='crop_resolution', enable_crop_jitter_in_name='concept.image.enable_crop_jitter', crop_offset_out_name='crop_offset')
@@ -217,7 +217,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         if config.model_type.has_depth_input():
             inputs.append('depth')
 
-        if config.custom_conditioning_image:
+        if config.uses_custom_conditioning_image():
             inputs.append('custom_conditioning_image')
             image_inputs.append('custom_conditioning_image')
 

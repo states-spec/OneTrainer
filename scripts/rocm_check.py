@@ -10,6 +10,8 @@ import modules.util.rocm_check.env_checks  # noqa: F401 (registers the checks, i
 import modules.util.rocm_check.kernel_checks  # noqa: F401
 import modules.util.rocm_check.perf_checks  # noqa: F401
 import modules.util.rocm_check.training_checks  # noqa: F401
+import modules.util.rocm_check.workload_checks  # noqa: F401
+from modules.util import path_util
 from modules.util.rocm_check.framework import FAIL, REGISTRY, Ctx, Report, child_main, run_checks
 
 import torch
@@ -19,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Checks and measures what OneTrainer runs on the GPU: kernel correctness against CPU references, "
                     "the training code (adapters, optimizers, offloading, caching), and speed per model family. "
-                    "Made for ROCm, works on CUDA and (partly) on the CPU. Writes rocm_check_report.txt and .json.")
+                    "Made for ROCm, works on CUDA and (partly) on the CPU. Writes rocm_check_report.txt and .json to diagnostics/rocm_check.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                         help="device to test (default: cuda if available, else cpu)")
     parser.add_argument("--full", action="store_true",
@@ -27,7 +29,8 @@ def main():
                              "(about 30-45 minutes instead of about 5)")
     parser.add_argument("--resolutions", type=int, nargs="+", default=[512, 1024],
                         help="training resolutions the speed checks size their tensors for (default: 512 1024)")
-    parser.add_argument("--out-dir", default=".", help="where the report files go (default: current directory)")
+    parser.add_argument("--out-dir", default=path_util.diagnostics_path("rocm_check"),
+                        help="where the report files go (default: diagnostics/rocm_check in the OneTrainer folder)")
     parser.add_argument("--only", nargs="+", help="run only checks whose 'section / name' contains one of these")
     parser.add_argument("--skip", nargs="+", help="skip checks whose 'section / name' contains one of these")
     parser.add_argument("--list", action="store_true", help="list the checks and exit")

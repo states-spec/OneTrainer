@@ -1,3 +1,4 @@
+from modules.ui import dropdown_hints
 from modules.util import path_util
 from modules.util.enum.DataType import DataType
 from modules.util.enum.ModelType import ModelType
@@ -58,7 +59,7 @@ class BaseConvertModelUIView:
 
         # output data type
         self.components.label(frame, 3, 0, "Output Data Type",
-                         tooltip="Precision to use when saving the output model")
+                         tooltip=dropdown_hints.OUTPUT_DTYPE, wide_tooltip=True)
         self.components.options_kv(frame, 3, 1, [
             ("float32", DataType.FLOAT_32),
             ("float16", DataType.FLOAT_16),
@@ -96,5 +97,5 @@ class BaseConvertModelUIView:
 
         # output format
         self.components.label(frame, row, 0, "Output Format",
-                         tooltip="Format to use when saving the output model")
+                         tooltip=dropdown_hints.OUTPUT_FORMAT, wide_tooltip=True)
         self.components.options_kv(frame, row, 1, controller.get_output_formats(), ui_state, "output_model_format")

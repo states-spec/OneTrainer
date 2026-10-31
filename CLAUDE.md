@@ -11,6 +11,7 @@ Run from the repo root. Launchers `cd` there themselves, but raw `python scripts
 ./install.sh                     # create venv (default) or conda env, install requirements-global + platform file
 OT_PLATFORM_REQUIREMENTS=requirements-rocm.txt ./install.sh   # skip GPU auto-detect (it picks /dev/nvidia0 before /dev/kfd)
 OT_PLATFORM_REQUIREMENTS=requirements-rocm10.txt ./install.sh # opt-in ROCm 10.1 (AMD's torch builds, gfx1100), in a separate clone; same variable for update.sh
+OT_PLATFORM_REQUIREMENTS=requirements-rocm-candidates/rocm72-torch2.12.txt ./install.sh  # other builds to compare (README there: torch 2.12.1/2.13.0/2.14.1 on ROCm 7.1/7.2, AOTriton 0.11.2/0.12.0/0.13.0)
 ./update.sh                      # git pull + pip install --upgrade --upgrade-strategy eager (re-pins torch!)
 ./start-ui.sh                    # PySide6 UI -> scripts/train_ui_qt.py
 ./run-cmd.sh train_ui_ctk        # legacy customtkinter UI (still maintained, same Base* views)

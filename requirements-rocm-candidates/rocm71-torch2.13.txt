@@ -1,0 +1,10 @@
+# Candidate: torch 2.13.0 on PyTorch's ROCm 7.1 build (the default is the ROCm 7.2 build of the same torch). Same
+# AOTriton (0.12.0); the ROCm libraries torch bundles (HIP, rocBLAS, hipBLASLt, MIOpen) are 7.1's. See README.md here.
+--extra-index-url https://download.pytorch.org/whl/rocm7.1
+torch==2.13.0+rocm7.1; sys_platform == "linux"
+torchvision==0.28.0+rocm7.1; sys_platform == "linux"
+onnxruntime==1.23.2 # CPU build: the captioning and masking models only use the CUDA or CPU execution provider
+
+# bitsandbytes loads libbitsandbytes_rocm71.so (in 0.49.2) for this torch; it links hipBLAS/hipSPARSE/hipBLASLt from a
+# system ROCm install (/opt/rocm/lib), which may be another version: if it fails to load, only its features fail
+bitsandbytes==0.49.2; sys_platform == "linux"

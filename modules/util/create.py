@@ -230,6 +230,17 @@ def check_optimizer_config(optimizer_config: TrainOptimizerConfig):
                              f'adv_optm fails in the first step. Pick another State Precision, or turn '
                              f'{" and ".join(clashing)} off.')
 
+    # torch's fused and foreach Adam(W) steps can't step one parameter at a time or round stochastically.
+    # create_optimizer refuses that too, but only after the model has loaded
+    if optimizer_config.optimizer in (Optimizer.ADAM, Optimizer.ADAMW) \
+            and (optimizer_config.fused or optimizer_config.foreach):
+        needing = [title for title, on in (("Fused Back Pass", optimizer_config.fused_back_pass),
+                                           ("Stochastic Rounding", optimizer_config.stochastic_rounding)) if on]
+        if needing:
+            raise ValueError(f'{" and ".join(needing)} only work{"s" if len(needing) == 1 else ""} with '
+                             f'{optimizer_config.optimizer}\'s plain implementation: turn Fused and ForEach off in '
+                             f'the optimizer settings, or turn {" and ".join(needing)} off.')
+
 
 def _disable_prodigy_adv_nesterov(optimizer: torch.optim.Optimizer):
     # a resumed group keeps the backup's settings, so a backup made with Nesterov on would still use it

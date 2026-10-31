@@ -53,6 +53,8 @@ from torchvision.transforms.functional import pil_to_tensor
 _DEBUG_PROFILES = os.environ.get("OT_DEBUG_PROFILES") == "1"
 _MEMORY_PROFILE_STEPS = (0, 1) if _DEBUG_PROFILES else ()
 _PROFILE_STEPS = (10, 11, 40, 41) if _DEBUG_PROFILES else ()
+# optimizer steps into a run after which a D-adapting optimizer still at Initial D is reported (create.d_at_initial_groups)
+_D_AT_INITIAL_CHECK_STEPS = 100
 
 
 class GenericTrainer(BaseTrainer):
@@ -749,6 +751,7 @@ class GenericTrainer(BaseTrainer):
         accumulated_loss = torch.tensor(0.0, device=train_device)
         ema_loss = None
         ema_loss_steps = 0
+        optimizer_steps = 0
         epochs = range(train_progress.epoch, self.config.epochs, 1)
 
         if multi.is_master():
@@ -961,6 +964,14 @@ class GenericTrainer(BaseTrainer):
 
                         self.one_step_trained = True
                         diagnostics.step(train_progress.global_step, train_progress.epoch, accumulated_loss_cpu)
+
+                        optimizer_steps += 1
+                        if optimizer_steps == _D_AT_INITIAL_CHECK_STEPS and multi.is_master() \
+                                and self.config.optimizer.optimizer.is_adaptive:
+                            message = create.d_at_initial_training_warning(
+                                self.config, self.model.optimizer, _D_AT_INITIAL_CHECK_STEPS)
+                            if message:
+                                tqdm.write(message)
 
                 if self.config.validation and multi.is_master():
                     self.__validate(train_progress)

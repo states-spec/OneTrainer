@@ -1360,23 +1360,54 @@ def create_optimizer(
                 _disable_prodigy_adv_nesterov(optimizer)
 
         if optimizer_config.optimizer.is_adaptive:
-            _warn_stuck_d(optimizer_config, optimizer.param_groups[0])
+            stuck = [group for group in d_at_initial_groups(optimizer, min_steps=20) if group[3] <= 0]
+            if stuck:
+                print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial "
+                      f"D, and its estimate is negative ({_describe_d_at_initial(stuck)}), so D will not grow from "
+                      f"here: the training continues at learning rate x Initial D. For D to adapt again, start without "
+                      f"this backup (Continue From Last Backup off, or a new workspace), or set Initial D to the step "
+                      f"size you want.")
 
     return optimizer
 
 
-def _warn_stuck_d(optimizer_config: TrainOptimizerConfig, group: dict):
-    # Prodigy grows D only while its estimate d_numerator / sum|s| exceeds D, and d_numerator sums
-    # dot(grad, start - weights). Once it is negative (weights that were already trained when the state started, and
-    # every step since moving around that point), D stays at Initial D, and a resumed backup carries that on: the
-    # user's Chroma LoRA resumed such a state run after run (d_numerator -3.7e-5 after 300+ steps, D 1e-4 throughout).
-    d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
-    if d is None or d0 is None or numerator is None or d != d0 or k < 20 or numerator > 0:
-        return
-    print(f"Warning: the backup's {optimizer_config.optimizer} state still has its step size D at Initial D ({d0:g}) "
-          f"after {k} steps, and its estimate is negative (d_numerator {numerator:.3g}), so D will not grow from here: "
-          f"the training continues at learning rate x {d0:g}. For D to adapt again, start without this backup "
-          f"(Continue From Last Backup off, or a new workspace), or set Initial D to the step size you want.")
+def d_at_initial_groups(optimizer: torch.optim.Optimizer, min_steps: int) -> list[tuple[str, float, int, float]]:
+    # Prodigy only ever raises D: to its estimate d_numerator / sum|s| (times d_coef) when that exceeds D. With D still
+    # at Initial D after many steps, the estimate never reached it, so the run trains at a fixed lr x Initial D, which
+    # is larger than the step size Prodigy estimates. d_numerator sums dot(grad, start - weights); once it is negative
+    # (the steps already went too far, the gradients point back towards the start) D can't grow at all. The user's
+    # Chroma LoRA trained like that with LoRA alpha 32 and Initial D 1e-4 (d_numerator negative, D 1e-4 for 450 steps;
+    # alpha 1 and Initial D 1e-6 adapted from step ~30), and a backup resumed such a state run after run.
+    # The (name, Initial D, steps, d_numerator) of each param group still at Initial D after min_steps steps.
+    # D-Adaptation keeps no d0/d_numerator in its groups and is never listed.
+    groups = []
+    for group in optimizer.param_groups:
+        d, d0, k, numerator = group.get("d"), group.get("d0"), group.get("k", 0), group.get("d_numerator")
+        if d is None or d0 is None or numerator is None or d != d0 or k < min_steps:
+            continue
+        groups.append((group.get("name", "?"), d0, k, numerator))
+    return groups
+
+
+def _describe_d_at_initial(groups: list[tuple[str, float, int, float]]) -> str:
+    return "; ".join(f"{name}: D {d0:g} after {k} steps, d_numerator {numerator:.3g}" for name, d0, k, numerator in groups)
+
+
+def d_at_initial_training_warning(config: TrainConfig, optimizer: torch.optim.Optimizer, steps: int) -> str | None:
+    # asked once, `steps` optimizer steps into a run. A run that adapts raises D within a few dozen steps (the user's
+    # Chroma LoRA from ~30); early on the estimate can also be slightly negative just from noise (3 random steps:
+    # -2.5e-12), so the run is given time first
+    groups = d_at_initial_groups(optimizer, min_steps=steps)
+    if not groups:
+        return None
+    negative = " A negative d_numerator means D can't grow at all any more." \
+        if any(numerator <= 0 for _, _, _, numerator in groups) else ""
+    lora = " or the LoRA alpha (a LoRA step's effect scales with alpha / rank)" \
+        if config.training_method == TrainingMethod.LORA else ""
+    return (f"Warning: {config.optimizer.optimizer}'s step size D is still at Initial D after {steps} steps of this "
+            f"run ({_describe_d_at_initial(groups)}). Prodigy only raises D, so its estimate stayed below Initial D: "
+            f"the run trains at a fixed learning rate x Initial D, a larger step than Prodigy estimates.{negative} If "
+            f"that isn't intended, lower Initial D (for example to 1e-6){lora}.")
 
 
 def create_ema(

@@ -385,7 +385,7 @@ def conv_ops(ctx: Ctx, rec: Rec):
 @check(SECTION, "bitsandbytes (8-bit optimizer state, INT_8, NFLOAT_4)", gpu_only=True)
 def bitsandbytes_ops(ctx: Ctx, rec: Rec):
     if importlib.util.find_spec("bitsandbytes") is None:
-        # requirements-rocm10.txt leaves it out: no release has a build for ROCm 10.1 (HIP 7.16) yet
+        # e.g. AMD's ROCm 10.1 builds (HIP 7.16): no bitsandbytes release has a build for them (docs/RocmVersionComparison.md)
         rec.skip("bitsandbytes is not installed: *_8BIT optimizers, INT_8 and NFLOAT_4 won't work")
         return
 

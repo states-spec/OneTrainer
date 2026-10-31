@@ -124,7 +124,7 @@ def environment(ctx: Ctx, rec: Rec):
             rec.line(f"bitsandbytes library: {os.path.basename(bnb_ext.lib._lib._name)}")
     except ModuleNotFoundError:
         rec.warn("bitsandbytes is not installed: *_8BIT optimizers, ADAGRAD, RMSPROP, LARS, LAMB, AdEMAMix, INT_8 and "
-                 "NFLOAT_4 won't work (requirements-rocm10.txt leaves it out: no release has a build for its ROCm)")
+                 "NFLOAT_4 won't work (e.g. AMD's ROCm 10.1 builds: no release has a build for them)")
     except Exception as e:
         rec.warn(f"bitsandbytes import failed: {type(e).__name__}: {e}")
 

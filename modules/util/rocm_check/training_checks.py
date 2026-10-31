@@ -108,7 +108,7 @@ def adapters(ctx: Ctx, rec: Rec):
 
 
 def _bitsandbytes_installed() -> bool:
-    # requirements-rocm10.txt leaves it out: no bitsandbytes release has a build for ROCm 10.1 (HIP 7.16) yet
+    # e.g. AMD's ROCm 10.1 builds (HIP 7.16): no bitsandbytes release has a build for them (docs/RocmVersionComparison.md)
     return importlib.util.find_spec("bitsandbytes") is not None
 
 

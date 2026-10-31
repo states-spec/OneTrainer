@@ -72,7 +72,8 @@ class EmbeddingLoaderMixin(metaclass=ABCMeta):
                     e2.__cause__ = e1
                     raise Exception(f"could not load embedding: {embedding_name}") from e2
 
-            if model.embedding_state_dicts.get(embedding_name.uuid) is None and embedding_name.model_name == "":
+            if model.embedding_state_dicts.get(embedding_name.uuid) is None and embedding_name.model_name == "" \
+                    and directory == model_names.lora:
                 # no file of its own: continuing from a final LoRA, the embedding is in that file's bundle
                 # (bundle_additional_embeddings); before, it started again from its initial text
                 bundled = self.__load_bundled(directory, embedding_name.placeholder)

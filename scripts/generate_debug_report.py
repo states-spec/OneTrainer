@@ -233,7 +233,7 @@ class OSInfo:
             # Special handling for Linux distributions
             if system == "Linux":
                 try:
-                    with open("/etc/os-release", "r") as f:
+                    with open("/etc/os-release", "r", encoding="utf-8") as f:
                         os_release = {
                             key: value.strip('"')
                             for line in f
@@ -295,7 +295,7 @@ class CPUInfo:
 
         if system == "Linux":
             try:
-                with open("/proc/cpuinfo", "r") as f:
+                with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
                     cpuinfo = f.read()
                 m = re.search(r"model name\s*:\s*(.*)", cpuinfo)
                 model_name = m.group(1).strip() if m else "Unavailable"
@@ -373,7 +373,7 @@ class IntelMicrocode:
         try:
             cpu_name = platform.processor() or ""
             if platform.system() == "Linux":
-                with open("/proc/cpuinfo", "r") as f:
+                with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
                     cpuinfo = f.read()
                 m = re.search(r"microcode\s*:\s*(\S+)", cpuinfo)
                 microcode = m.group(1) if m else "Unavailable"
@@ -846,7 +846,7 @@ class TorchGPUInfo:
         rocm_version_file = Path("/opt/rocm/.info/version")
         if rocm_version_file.is_file():
             try:
-                lines.append(f"System ROCm (/opt/rocm): {rocm_version_file.read_text().strip()}")
+                lines.append(f"System ROCm (/opt/rocm): {rocm_version_file.read_text(encoding='utf-8').strip()}")
             except OSError as e:
                 lines.append(f"System ROCm (/opt/rocm): unreadable ({e})")
 

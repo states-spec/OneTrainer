@@ -46,7 +46,7 @@ def missing_referenced_files(config_path: str, variants: list[Variant], config_v
                              root: str) -> list[str]:
     """the concepts/samples files the runs would read but that don't exist. Every run copies the config into its
     workspace with these lists inlined (GenericTrainer.__save_config_to_workspace), and fails there without them"""
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         config = json.load(f)
     problems = []
     for key, inline_key, default in _REFERENCED_FILES:
@@ -101,11 +101,11 @@ def run_ab(config_path: str, variants: list[Variant], repeats: int, out_dir: str
             print(f"=== {variant.name}, run {repeat} of {repeats}: {' '.join(f'{k}={v}' for k, v in variant.env.items())}"
                   f" {' '.join(variant.config_values)}", flush=True)
             start = time.perf_counter()
-            with open(os.path.join(run_dir, "output.log"), "w") as out:
+            with open(os.path.join(run_dir, "output.log"), "w", encoding="utf-8") as out:
                 result = subprocess.run(cmd, cwd=root, env=env, stdout=out, stderr=subprocess.STDOUT)
             print(f"    exit code {result.returncode} after {time.perf_counter() - start:.0f} s, log {log}", flush=True)
             if result.returncode != 0:
-                with open(os.path.join(run_dir, "output.log"), errors="replace") as f:
+                with open(os.path.join(run_dir, "output.log"), encoding="utf-8", errors="replace") as f:
                     tail = [line.rstrip() for line in f if line.strip()][-8:]
                 print("    the run failed, the end of its output.log:\n      " + "\n      ".join(tail), flush=True)
             logs.append(log)

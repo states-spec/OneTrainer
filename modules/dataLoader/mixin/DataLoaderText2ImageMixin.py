@@ -404,7 +404,7 @@ class DataLoaderText2ImageMixin(metaclass=ABCMeta):
         checks = [("The resolution", config.resolution)]
         concepts = config.concepts
         if concepts is None:
-            with open(config.concept_file_name, 'r') as f:
+            with open(config.concept_file_name, 'r', encoding='utf-8') as f:
                 concepts = [ConceptConfig.default_values().from_dict(c) for c in json.load(f)]
         checks += [(f"The resolution override of concept '{concept.name or concept.path}'", concept.image.resolution_override)
                    for concept in concepts if concept.enabled and concept.image.enable_resolution_override]

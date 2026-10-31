@@ -285,7 +285,7 @@ class _Probe:
 def run_probe(config: TrainConfig, steps: int, check_every: int, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
     text_path = os.path.join(out_dir, "train_probe.txt")
-    with open(text_path, "w") as text:
+    with open(text_path, "w", encoding="utf-8") as text:
 
         def log(line: str):
             print(line, flush=True)

@@ -226,9 +226,9 @@ class Report:
             "running_when_written": self.running,
             "results": self.results,
         }
-        with open(self.json_path, "w") as f:
+        with open(self.json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=1)
-        with open(self.txt_path, "w") as f:
+        with open(self.txt_path, "w", encoding="utf-8") as f:
             f.write(self.text())
 
     def text(self) -> str:

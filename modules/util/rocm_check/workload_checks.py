@@ -27,12 +27,12 @@ def _repo_root(ctx: Ctx) -> str:
 
 
 def _base_config(ctx: Ctx, model: str, data: str, run_dir: str, epochs: int) -> dict:
-    with open(os.path.join(_repo_root(ctx), _PRESET)) as f:
+    with open(os.path.join(_repo_root(ctx), _PRESET), encoding="utf-8") as f:
         config = json.load(f)
     gpu = ctx.device.type == "cuda"
-    with open(os.path.join(run_dir, "concepts.json"), "w") as f:
+    with open(os.path.join(run_dir, "concepts.json"), "w", encoding="utf-8") as f:
         json.dump([{"name": "data", "path": data, "enabled": True, "seed": 1, "text": {"prompt_source": "sample"}}], f)
-    with open(os.path.join(run_dir, "samples.json"), "w") as f:
+    with open(os.path.join(run_dir, "samples.json"), "w", encoding="utf-8") as f:
         json.dump([{"prompt": "a red cat on a table", "height": 256, "width": 256, "seed": 7, "diffusion_steps": 4,
                     "cfg_scale": 1.0, "enabled": True}], f)
     config.update({
@@ -53,7 +53,7 @@ def _base_config(ctx: Ctx, model: str, data: str, run_dir: str, epochs: int) -> 
 
 def _train(ctx: Ctx, run_dir: str, config: dict, env: dict[str, str], values: list[str], log_name: str) -> dict:
     config_path = os.path.join(run_dir, "config.json")
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=1)
     diag = os.path.join(run_dir, f"{log_name}.jsonl")
     cmd = [sys.executable, os.path.join(_repo_root(ctx), "scripts", "train.py"), "--config-path", config_path]
@@ -62,7 +62,7 @@ def _train(ctx: Ctx, run_dir: str, config: dict, env: dict[str, str], values: li
     run_env = {**os.environ, "OT_SEED": _SEED, **env, "OT_DIAG_LOG": diag, "OT_DIAG_LABEL": log_name}
     start = time.perf_counter()
     result = subprocess.run(cmd, cwd=_repo_root(ctx), env=run_env, capture_output=True, text=True, timeout=1800)
-    with open(os.path.join(run_dir, f"{log_name}.log"), "w") as f:
+    with open(os.path.join(run_dir, f"{log_name}.log"), "w", encoding="utf-8") as f:
         f.write(result.stdout + result.stderr)
     tail = [line for line in (result.stdout + result.stderr).splitlines() if line.strip()][-6:]
     return {"rc": result.returncode, "seconds": time.perf_counter() - start, "diag": diag, "tail": tail,
@@ -84,7 +84,7 @@ def _weights_diff(a: dict, b: dict) -> float:
 def _losses(diag: str) -> dict[int, float]:
     out = {}
     if os.path.exists(diag):
-        with open(diag) as f:
+        with open(diag, encoding="utf-8") as f:
             for line in f:
                 try:
                     r = json.loads(line)
@@ -259,7 +259,7 @@ def components(ctx: Ctx, rec: Rec):
 
     with tempfile.TemporaryDirectory(dir=ctx.out_dir if os.path.isdir(ctx.out_dir) else None) as tmp:
         path = build_tiny_chroma(os.path.join(tmp, "model"))
-        with open(os.path.join(_repo_root(ctx), _PRESET)) as f:
+        with open(os.path.join(_repo_root(ctx), _PRESET), encoding="utf-8") as f:
             preset = json.load(f)
 
         def load(dtype: DataType) -> tuple[ChromaModel, TrainConfig]:

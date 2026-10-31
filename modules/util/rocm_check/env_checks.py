@@ -110,7 +110,7 @@ def environment(ctx: Ctx, rec: Rec):
 
     rocm_version = Path("/opt/rocm/.info/version")
     if rocm_version.is_file():
-        rec.line(f"system ROCm (/opt/rocm): {rocm_version.read_text().strip()}")
+        rec.line(f"system ROCm (/opt/rocm): {rocm_version.read_text(encoding='utf-8').strip()}")
     env = [f"{name}={os.environ[name]}" for name in ENV_VARS if name in os.environ]
     rec.line("environment: " + (", ".join(env) if env else "none of the GPU variables are set"))
     alloc_conf = next((os.environ[n] for n in ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")

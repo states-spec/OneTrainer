@@ -45,7 +45,7 @@ def main():
     text, _ = report(logs, compare_weights=not args.no_weights)
     print()
     print(text)
-    with open(os.path.join(out_dir, "report.txt"), "w") as f:
+    with open(os.path.join(out_dir, "report.txt"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
     print(f"\nreport written to {os.path.join(out_dir, 'report.txt')}")
 

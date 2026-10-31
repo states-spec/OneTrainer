@@ -305,7 +305,7 @@ class BaseConfigListView(ABC):
 
     def __load_current_config(self, filename):
         try:
-            with open(filename, "r") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 self.current_config = []
 
                 loaded_config_json = json.load(f)

@@ -15,10 +15,10 @@ from modules.util.optimizer_util import default_optimizer_config
 
 def load_config(args: TrainArgs, train_config: TrainConfig) -> TrainConfig:
     if args.preset_path is not None:
-        with open(args.preset_path, "r") as f:
+        with open(args.preset_path, "r", encoding="utf-8") as f:
             train_config.from_dict(json.load(f), migrate=False)
 
-    with open(args.config_path, "r") as f:
+    with open(args.config_path, "r", encoding="utf-8") as f:
         train_config.from_dict(json.load(f), migrate=args.preset_path is None)
 
     for config_value in args.config_values or []:
@@ -56,7 +56,7 @@ def main():
         train_config.training_method, train_config.run_name_mode, train_config.run_name, is_new_invocation=True)
 
     try:
-        with open("secrets.json" if args.secrets_path is None else args.secrets_path, "r") as f:
+        with open("secrets.json" if args.secrets_path is None else args.secrets_path, "r", encoding="utf-8") as f:
             secrets_dict=json.load(f)
             train_config.secrets = SecretsConfig.default_values().from_dict(secrets_dict)
     except FileNotFoundError:

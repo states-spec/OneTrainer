@@ -77,7 +77,7 @@ class ConceptWindowController:
     def _read_text_file_for_preview(self, file_path: str, preview_augmentations: bool) -> str:
         empty_msg = "[Empty prompt]"
         try:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 if preview_augmentations:
                     lines = [line.strip() for line in f if line.strip()]
                     return random.choice(lines) if lines else empty_msg

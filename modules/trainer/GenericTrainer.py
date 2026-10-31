@@ -267,7 +267,7 @@ class GenericTrainer(BaseTrainer):
         concepts = self.config.concepts
         if concepts is None:
             try:
-                with open(self.config.concept_file_name, "r") as f:
+                with open(self.config.concept_file_name, "r", encoding="utf-8") as f:
                     concepts = [ConceptConfig.default_values().from_dict(c) for c in json.load(f)]
             except (OSError, ValueError):
                 return  # the data loader reports a missing or unreadable concepts file
@@ -282,7 +282,7 @@ class GenericTrainer(BaseTrainer):
         path = path_util.canonical_join(self.config.workspace_dir, "config")
         os.makedirs(Path(path).absolute(), exist_ok=True)
         path = path_util.canonical_join(path, f"{self.config.run_name}.json")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.config.to_pack_dict(secrets=False), f, indent=4)
 
     def __clear_cache(self):
@@ -403,7 +403,7 @@ class GenericTrainer(BaseTrainer):
             sample_params_list = self.config.samples
         else:
             try:
-                with open(self.config.sample_definition_file_name, 'r') as f:
+                with open(self.config.sample_definition_file_name, 'r', encoding="utf-8") as f:
                     samples = json.load(f)
                     for i in range(len(samples)):
                         samples[i] = SampleConfig.default_values(self.config.model_type).from_dict(samples[i])
@@ -542,7 +542,7 @@ class GenericTrainer(BaseTrainer):
 
         os.makedirs(Path(config_path).absolute(), exist_ok=True)
 
-        with open(args_path, "w") as f:
+        with open(args_path, "w", encoding="utf-8") as f:
             json.dump(self.config.to_settings_dict(secrets=False), f, indent=4)
         if os.path.isfile(self.config.concept_file_name):
             shutil.copy2(self.config.concept_file_name, concepts_path)

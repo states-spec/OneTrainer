@@ -14,7 +14,7 @@ from modules.util.optimizer_util import default_optimizer_config
 
 
 def load(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     builtin = os.path.basename(path).startswith("#") and os.path.basename(path) != "#.json"
     optimizer = TrainConfig.default_values().from_dict(json.loads(json.dumps(data)), migrate=not builtin).optimizer.optimizer

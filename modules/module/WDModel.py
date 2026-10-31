@@ -30,7 +30,7 @@ class WDModel(BaseImageCaptionModel):
         self.rating_indexes = []
         self.general_indexes = []
         self.character_indexes = []
-        with open(label_path, newline='') as file:
+        with open(label_path, encoding="utf-8", newline='') as file:
             reader = csv.DictReader(file, delimiter=',', quotechar='\"')
             for i, row in enumerate(reader):
                 if row["category"] == "9":

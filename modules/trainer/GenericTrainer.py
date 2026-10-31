@@ -163,7 +163,9 @@ class GenericTrainer(BaseTrainer):
                     # the trained transformer is part of the backup, a configured override would replace it
                     model_names.transformer_model = ""
 
-                print(f"Continuing training from backup '{last_backup_path}'...")
+                description = self.config.describe_backup(last_backup_path)
+                print(f"Continuing training from backup '{last_backup_path}'"
+                      f"{f' ({description})' if description else ''}...")
             else:
                 print("No backup found, continuing without backup...")
 

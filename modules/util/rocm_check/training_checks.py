@@ -3,6 +3,7 @@ save/resume round trip), layer offloading through the real LayerOffloadConductor
 VAE encodes (the ROCm NaN-latent bug the caching lock works around).
 """
 import copy
+import importlib.util
 import io
 import itertools
 import os
@@ -106,6 +107,11 @@ def adapters(ctx: Ctx, rec: Rec):
             rec.metric(f"fwd+bwd ms 2x1024x3072 {name}", t)
 
 
+def _bitsandbytes_installed() -> bool:
+    # e.g. AMD's ROCm 10.1 builds (HIP 7.16): no bitsandbytes release has a build for them (docs/RocmVersionComparison.md)
+    return importlib.util.find_spec("bitsandbytes") is not None
+
+
 def _optimizer_list(ctx: Ctx):
     from modules.util.enum.Optimizer import Optimizer
     from modules.util.optimizer_util import adv_state_precisions
@@ -113,7 +119,7 @@ def _optimizer_list(ctx: Ctx):
     optimizers = [Optimizer.ADOPT_ADV, Optimizer.PRODIGY_ADV, Optimizer.ADAMW]
     if ctx.full:
         optimizers += [Optimizer.ADAMW_ADV, Optimizer.PRODIGY_PLUS_SCHEDULE_FREE, Optimizer.SCHEDULE_FREE_ADAMW]
-        if ctx.is_gpu:
+        if ctx.is_gpu and _bitsandbytes_installed():
             optimizers.append(Optimizer.ADAMW_8BIT)
     out = []
     for opt in optimizers:
@@ -242,8 +248,10 @@ def optimizers(ctx: Ctx, rec: Rec):
             rec.expect(diff < 1e-3, f"{label_opt} fp32: GPU vs CPU after 6 steps rel diff {diff:.1e} (limit 1e-3)")
 
 
-# optimizers backed by bitsandbytes, even 32-bit (create.py); its optimizers run only on the GPU
-_BNB_OPTIMIZERS = ("ADAGRAD", "RMSPROP", "LARS", "LAMB", "AdEMAMix")
+# the optimizers create.py builds from bitsandbytes classes, 32-bit ones included (CAME_8BIT is OneTrainer's own);
+# they run only on the GPU
+_BNB_OPTIMIZERS = ("ADAGRAD", "ADAGRAD_8BIT", "ADAM_8BIT", "ADAMW_8BIT", "AdEMAMix", "AdEMAMix_8BIT", "LAMB",
+                   "LAMB_8BIT", "LARS", "LARS_8BIT", "LION_8BIT", "RMSPROP", "RMSPROP_8BIT", "SGD_8BIT")
 
 
 @check(SECTION, "every optimizer with its UI defaults: create, step, save/resume, fused back pass (create_optimizer)")
@@ -253,9 +261,10 @@ def all_optimizers(ctx: Ctx, rec: Rec):
     # 2D parameters only, as a LoRA has: Muon and AdaMuon without the auxiliary Adam refuse 1D ones
     shapes = [(16, 64), (64, 16), (64, 1)]
     names = []
+    bnb_installed = _bitsandbytes_installed()
     for optimizer in Optimizer:
-        if (optimizer.name.endswith("8BIT") or optimizer.name in _BNB_OPTIMIZERS) and not ctx.is_gpu:
-            names.append(f"{optimizer} (bitsandbytes, GPU only: not run)")
+        if optimizer.name in _BNB_OPTIMIZERS and not (ctx.is_gpu and bnb_installed):
+            names.append(f"{optimizer} (bitsandbytes, {'GPU only' if bnb_installed else 'not installed'}: not run)")
             continue
         params = [_rand(ctx, *shape, scale=0.1, seed=40 + i) for i, shape in enumerate(shapes)]
         try:
@@ -721,7 +730,7 @@ def vae_layers(ctx: Ctx, rec: Rec):
                 else:
                     out["r"] = _encode_with_layer_errors(vae, img_d, reference)
             except Exception as e:
-                out["e"] = f"{type(e).__name__}: {e}"
+                out["e"] = f"{type(e).__name__}: {(str(e).splitlines() or [''])[0]}"
 
         torch.backends.cudnn.enabled = miopen
         fix_was_installed = rocm_sdpa_fix.installed()
@@ -738,8 +747,11 @@ def vae_layers(ctx: Ctx, rec: Rec):
             torch.backends.cudnn.enabled = miopen_default
             if fix_was_installed:
                 rocm_sdpa_fix.install()
+        # without the fix, PyTorch's own kernel at head size 512 gives wrong numbers (AOTriton 0.12b) or fails
+        # (AOTriton 0.14, which has no gfx110x kernels above 256): both are the known bug
+        report = rec.warn if not sdpa_fix and rocm_sdpa_fix.applies_to(ctx.device) else rec.fail
         if "e" in out:
-            rec.fail(f"{label}: {out['e']}")
+            report(f"{label}: {out['e']}")
             return None
         records, latent = out["r"]
         final = rel_err(latent, ref_latent)
@@ -749,7 +761,6 @@ def vae_layers(ctx: Ctx, rec: Rec):
             return True
         name, kind, err, is_finite = bad[0] if bad else ("(none)", "", final, True)
         types = sorted({r[1] for r in bad})
-        report = rec.warn if not sdpa_fix and rocm_sdpa_fix.applies_to(ctx.device) else rec.fail
         report(f"{label}: latent rel err {final:.2e}; first wrong layer {name} ({kind}): "
                  f"{'NaN/inf' if not is_finite else f'rel err {err:.2e}'}; wrong layer types: {', '.join(types)}")
         return False

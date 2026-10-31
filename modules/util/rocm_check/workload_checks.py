@@ -233,6 +233,9 @@ def training_runs(ctx: Ctx, rec: Rec):
                      f"{(s['held unused at end GiB'] or 0) * 1024:.0f} MiB, alloc retries {s['alloc retries']}, "
                      f"{s['part moves']} part moves in {s['part move s']:.1f} s, step {s['step s median'] or 0:.3f} s")
             rec.metric(f"{name}: peak reserved MiB", s["peak reserved GiB"] * 1024)
+            if s["step s median"]:
+                rec.metric(f"{name}: step ms", s["step s median"] * 1000)
+            rec.metric(f"{name}: run seconds", r["seconds"])
     finally:
         if failed:
             rec.line(f"the runs are kept in {base_dir} (each run's .log and .jsonl, compare with diag_report)")

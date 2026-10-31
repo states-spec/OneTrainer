@@ -211,16 +211,18 @@ class BaseConfigListView(ABC):
                     self.configs.append((name, path))
 
         if len(self.configs) == 0:
-            name = self.default_config_name.removesuffix(".json")
-            # a fresh install: write the empty default list before the dropdown loads it. Loading it while it didn't
-            # exist yet printed "Failed to load config from training_concepts/concepts.json" at the first start
+            # a fresh install: write the empty default list and offer it. Loading it while it didn't exist yet printed
+            # "Failed to load config from training_concepts/concepts.json" at the first start. The dropdown is built
+            # later in build(), once the file the config names is listed too: building it here switched a restored
+            # session (training_presets/#.json) whose list lives elsewhere to this empty one.
+            name = path_util.safe_filename(self.default_config_name.removesuffix(".json"))
+            path = path_util.canonical_join(self.config_dir, f"{name}.json")
             try:
                 os.makedirs(self.config_dir, exist_ok=True)
-                write_json_atomic(path_util.canonical_join(self.config_dir, f"{path_util.safe_filename(name)}.json"), [])
+                write_json_atomic(path, [])
             except OSError as e:
                 print(f"Failed to save config: {e}")
-            self.__create_config(name)
-            self.save_current_config()
+            self.configs.append((name, path))
 
     def __list_config_file(self, filename: str) -> bool:
         # A config can name a file outside config_dir (e.g. one written for the CLI). It must be in the dropdown:

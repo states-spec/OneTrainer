@@ -4,6 +4,7 @@ Inputs are rounded to the tested dtype before the reference sees them, so the er
 (accumulation, output rounding), not the input rounding. Tolerances are relative errors (norm of the difference /
 norm of the reference) and leave room for the output dtype's rounding.
 """
+import importlib.util
 import math
 
 from modules.util import rocm_sdpa_fix
@@ -321,6 +322,14 @@ def sdpa_correctness(ctx: Ctx, rec: Rec):
                                 or "not supported" in str(e).lower():
                             results.append(f"{bname} n/a")
                             continue
+                        if backend is not None and d > rocm_sdpa_fix.MAX_HEAD_DIM and fix_applies:
+                            # AOTriton 0.14 (the ROCm 10.1 builds) ships no gfx110x kernels above head size 256, but
+                            # PyTorch still picks them: the call fails instead of giving wrong numbers as 0.12b's did
+                            rec.warn(f"hd {d} {DTYPE_NAME[dtype]} {mask_name} {bname}: {type(e).__name__}: "
+                                     f"{(str(e).splitlines() or [''])[0]} (PyTorch bug; OneTrainer uses the math "
+                                     f"kernel here)")
+                            results.append(f"{bname} error")
+                            continue
                         raise
                     valid = rows_valid.expand_as(out).to(ctx.device)
                     err_out = rel_err(out[valid], ref[valid.cpu()])
@@ -375,6 +384,11 @@ def conv_ops(ctx: Ctx, rec: Rec):
 
 @check(SECTION, "bitsandbytes (8-bit optimizer state, INT_8, NFLOAT_4)", gpu_only=True)
 def bitsandbytes_ops(ctx: Ctx, rec: Rec):
+    if importlib.util.find_spec("bitsandbytes") is None:
+        # e.g. AMD's ROCm 10.1 builds (HIP 7.16): no bitsandbytes release has a build for them (docs/RocmVersionComparison.md)
+        rec.skip("bitsandbytes is not installed: *_8BIT optimizers, INT_8 and NFLOAT_4 won't work")
+        return
+
     from modules.module.quantized.LinearNf4 import LinearNf4
 
     import bitsandbytes as bnb

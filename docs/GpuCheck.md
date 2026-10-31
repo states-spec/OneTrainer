@@ -102,6 +102,24 @@ results up to the check that was running (the report names it). The exit code is
   Python 3.13) and a newer glibc define it differently. They are not errors, the check's own line (`-> INFO`,
   `-> PASS`) is the result, and Triton keeps the built helper in `~/.triton/cache`, so it doesn't build it again.
 
+## Comparing PyTorch/ROCm builds
+
+Run the full check in each environment (each its own clone and venv, the same OneTrainer commit), then put the reports
+side by side; the first is the reference:
+
+```sh
+./run-cmd.sh rocm_check_compare ~/OT_KP2/diagnostics/rocm_check/rocm_check_report.json \
+    ~/OT_ROCm10/diagnostics/rocm_check/rocm_check_report.json
+```
+
+It lists each report's PyTorch build and commit, every check's status side by side (`*` where they differ), the
+problems, and every speed number with its speed relative to the first report, plus a geometric mean per check (above 1
+= faster; attention uses PyTorch's own backend choice only). It writes the same to
+`diagnostics/rocm_check/rocm_check_compare.txt`. One report per build is one sample: the run-time switches' child
+processes vary between runs, and the first run in a new environment fills its kernel caches (first-call and compile
+times). For the real workload, train your config in both environments with `diag_ab` and `python:` variants
+([RunDiagnostics.md](RunDiagnostics.md)).
+
 ## Adding to it
 
 - A new model family with other attention or MLP sizes: add a row to `modules/util/rocm_check/shapes.py`.

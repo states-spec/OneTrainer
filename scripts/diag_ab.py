@@ -21,8 +21,10 @@ def main():
     parser.add_argument("--config-value", action="append", dest="config_values", default=[],
                         help="KEY=VALUE for every run, e.g. epochs=1 (as for train)")
     parser.add_argument("--variant", action="append", dest="variants",
-                        help="'NAME env:KEY=VALUE config:key=value ...', e.g. 'mempools env:OT_ROCM_MEM_POOLS=true'"
-                             " or 'nostream config:stream_from_disk=false'. Can be passed multiple times")
+                        help="'NAME env:KEY=VALUE config:key=value python:PATH ...', e.g. 'mempools "
+                             "env:OT_ROCM_MEM_POOLS=true', 'nostream config:stream_from_disk=false' or 'rocm71 "
+                             "python:~/OT_rocm71/venv/bin/python' (this checkout's code with another venv's PyTorch/"
+                             "ROCm build). Can be passed multiple times")
     parser.add_argument("--repeats", type=int, default=2,
                         help="runs per variant (default 2: a repeat shows the run-to-run noise)")
     parser.add_argument("--out-dir", help="where the runs go (default diagnostics/diag_ab/<timestamp>)")
@@ -36,6 +38,10 @@ def main():
     variants = [parse_variant(v) for v in (args.variants or DEFAULT_VARIANTS)]
     if len({v.name for v in variants}) != len(variants):
         parser.error("variant names must differ")
+    for v in variants:
+        if v.python and not os.path.isfile(v.python):
+            parser.error(f"variant {v.name}: no interpreter {v.python} (python:PATH takes another environment's "
+                         f"python, e.g. a clone's venv/bin/python)")
     out_dir = args.out_dir or path_util.diagnostics_path("diag_ab", get_string_timestamp())
     logs = run_ab(os.path.abspath(args.config_path), variants, args.repeats, out_dir,
                   os.path.abspath(args.preset_path) if args.preset_path else None, args.config_values)

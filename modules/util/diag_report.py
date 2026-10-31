@@ -234,7 +234,8 @@ def report(paths: list[str], compare_weights: bool = True) -> tuple[str, dict]:
     for r, s in zip(runs, summaries, strict=True):
         h = r.header
         lines.append(f"  {r.label}: {s['status']}, {s['steps']} steps, variant {r.variant}, commit {h.get('commit')}, "
-                     f"{h.get('gpu', h.get('device'))}, MemPools {h.get('mem_pools')}  ({r.path})")
+                     f"torch {h.get('torch')}, {h.get('gpu', h.get('device'))}, MemPools {h.get('mem_pools')}  "
+                     f"({r.path})")
     if len(runs) > 1:
         lines.append("")
         lines.append("settings that differ:" if differing else "settings that differ: none")

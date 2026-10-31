@@ -28,6 +28,37 @@ _SEVERITY = {PASS: 0, INFO: 0, SKIP: 1, WARN: 2, FAIL: 3}
 CHILD_RESULT_PREFIX = "ROCM_CHECK_CHILD_RESULT "
 
 
+def _git(*args: str) -> str:
+    try:
+        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10,
+                              cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
+    except Exception:
+        return "?"
+
+
+def onetrainer_version() -> str:
+    """the branch and commit of this checkout, and whether tracked files differ from it"""
+    return (f"{_git('rev-parse', '--abbrev-ref', 'HEAD')} @ {_git('rev-parse', '--short', 'HEAD')}"
+            f"{' (uncommitted changes)' if _git('status', '--porcelain', '--untracked-files=no') else ''}")
+
+
+def torch_stack() -> dict:
+    """the PyTorch build a report was made with: torch.version.rocm exists in AMD's own builds (ROCm 10)"""
+    return {"torch": torch.__version__, "hip": torch.version.hip, "rocm": getattr(torch.version, "rocm", None),
+            "cuda": torch.version.cuda}
+
+
+def stack_label(stack: dict) -> str:
+    """'torch 2.13.0+rocm7.2 (HIP 7.2.x)' from torch_stack() or a report's header; empty for reports made before the
+    header had it"""
+    if not stack.get("torch"):
+        return ""
+    gpu = [f"HIP {stack['hip']}" if stack.get("hip") else "", f"ROCm {stack['rocm']}" if stack.get("rocm") else "",
+           f"CUDA {stack['cuda']}" if stack.get("cuda") else ""]
+    gpu = [part for part in gpu if part]
+    return f"torch {stack['torch']}" + (f" ({', '.join(gpu)})" if gpu else "")
+
+
 class Rec:
     """What a check reports: a status (the worst one set), detail lines and named numbers."""
 
@@ -242,6 +273,10 @@ class Report:
         self.ctx = ctx
         self.started = time.strftime("%Y-%m-%d %H:%M:%S")
         self.argv = argv
+        # in the header, so every report (also one made with --only, which skips the environment check) says which
+        # code and which PyTorch build it comes from
+        self.onetrainer = onetrainer_version()
+        self.stack = torch_stack()
         self.results: list[dict] = []
         self.running: str | None = None
         self.txt_path = os.path.join(ctx.out_dir, "rocm_check_report.txt")
@@ -253,6 +288,8 @@ class Report:
             "command": " ".join(self.argv),
             "device": str(self.ctx.device),
             "mode": "full" if self.ctx.full else "quick",
+            "onetrainer": self.onetrainer,
+            **self.stack,
             "platform": platform.platform(),
             "running_when_written": self.running,
             "results": self.results,
@@ -265,6 +302,7 @@ class Report:
     def text(self) -> str:
         out = [f"OneTrainer ROCm/GPU check  ({'full' if self.ctx.full else 'quick'} mode, device {self.ctx.device})",
                f"started {self.started}",
+               f"OneTrainer {self.onetrainer}, {stack_label(self.stack)}",
                f"command: {' '.join(self.argv)}", ""]
         counts = {}
         for r in self.results:

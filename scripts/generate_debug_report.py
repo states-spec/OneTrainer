@@ -795,7 +795,18 @@ class TorchGPUInfo:
         import json, os
         import torch
         info = {"torch": torch.__version__, "cuda": torch.version.cuda, "hip": torch.version.hip,
-                "available": torch.cuda.is_available(), "devices": []}
+                "rocm": getattr(torch.version, "rocm", None), "available": torch.cuda.is_available(), "devices": []}
+        # AMD's ROCm 10 builds bring the ROCm libraries as pip packages; which HIP runtime got loaded
+        try:
+            import importlib.metadata
+            info["rocm_sdk"] = importlib.metadata.version("rocm-sdk-core")
+        except Exception:
+            info["rocm_sdk"] = None
+        try:
+            with open("/proc/self/maps", encoding="utf-8") as f:
+                info["hip_runtime"] = sorted({l.split()[-1] for l in f if "libamdhip64" in l and "/" in l})
+        except OSError:
+            info["hip_runtime"] = []
         if info["available"]:
             for i in range(torch.cuda.device_count()):
                 p = torch.cuda.get_device_properties(i)
@@ -829,7 +840,14 @@ class TorchGPUInfo:
             result = Utility.subprocess_run([sys.executable, "-c", TorchGPUInfo.PROBE], timeout=180)
             info = json.loads(result.stdout.strip().splitlines()[-1])
             build = f"ROCm/HIP {info['hip']}" if info["hip"] else f"CUDA {info['cuda']}" if info["cuda"] else "CPU only"
+            if info.get("rocm"):
+                build += f", ROCm {info['rocm']}"
             lines.append(f"PyTorch: {info['torch']} ({build})")
+            if info.get("rocm_sdk"):
+                lines.append(f"ROCm from pip: rocm-sdk-core {info['rocm_sdk']}")
+            if info.get("hip_runtime"):
+                lines.append(("HIP runtime loaded from: " if len(info["hip_runtime"]) == 1
+                              else "SEVERAL HIP runtimes loaded: ") + ", ".join(info["hip_runtime"]))
             if info["devices"]:
                 lines += [f"Device {i}: {device}" for i, device in enumerate(info["devices"])]
             else:

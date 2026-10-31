@@ -18,9 +18,9 @@ Then compare (see docs/GpuCheck.md, "Comparing PyTorch/ROCm builds", and docs/Ru
 |---|---|---|---|---|
 | (default) `requirements-rocm.txt` | 2.13.0 | 7.2 | 0.12 | the reference (your current setup) |
 | `rocm71-torch2.13.txt` | 2.13.0 | 7.1 | 0.12.0 | the ROCm 7.1 libraries (BLAS, MIOpen, HIP) with the same torch and attention |
-| `rocm72-torch2.12.txt` | 2.12.1 | 7.2 | 0.11.2 | the older attention kernels; PyTorch keeps gfx11 at head size 256 with 0.11, so head size 512 runs the math kernel there anyway |
+| `rocm72-torch2.12.txt` | 2.12.1 | 7.2 | 0.11.2 | measured (827a053): every check passes, head size 512 never reaches the faulty kernels (PyTorch keeps gfx11 at 256 with 0.11); attention 0.57x the speed of the default (Chroma 512 px 6.65 vs 3.52 ms), everything else the same |
 | `rocm72-torch2.14.txt` | 2.14.1 | 7.2 | 0.13.0 | the newer torch and attention on the same ROCm |
-| (root) `requirements-rocm10.txt` | 2.13.0 | 10.1 (AMD's build) | 0.14 | measured: same results, attention 8-58% slower, no bitsandbytes |
+| (root) `requirements-rocm10.txt` | 2.13.0 | 10.1 (AMD's build) | 0.14 | measured: same results, attention 0.83x the speed of the default, no bitsandbytes |
 
 Not here: PyTorch's ROCm 7.14 and 10.0 builds (TheRock 7.14/10.0: the AOTriton packaging gap that wrongly enables
 flash attention and gave NaNs), and AMD's ROCm 10.2/10.3 nightlies (no stable release yet).
